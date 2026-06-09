@@ -174,3 +174,4 @@ Buffer/
 data/companies.json
 http_cache.sqlite
 test_out.txt
+data/portfolio.json

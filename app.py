@@ -24,6 +24,7 @@ from src.data_loader import (
 )
 from src.models import calcular_todos
 from src.analysis import gerar_relatorio_completo
+from src.carteira_page import page_carteira
 from src.formatters import (
     formatar_moeda, formatar_percentual, formatar_multiplo,
     formatar_milhoes, calcular_margem, status_margem
@@ -334,6 +335,7 @@ def render_sidebar():
 
         nav = {
             '🏠 Dashboard':       'dashboard',
+            '💼 Minha Carteira':  'carteira',
             '🔍 Valuation':       'valuation',
             '⚖️ Comparativo':     'comparativo',
             '📝 Entrada Manual':  'manual',
@@ -1670,6 +1672,8 @@ def main():
     page = st.session_state.get('page', 'dashboard')
     if page == 'dashboard':
         page_dashboard()
+    elif page == 'carteira':
+        page_carteira()
     elif page == 'valuation':
         page_valuation()
     elif page == 'comparativo':
