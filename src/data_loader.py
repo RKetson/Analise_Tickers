@@ -104,6 +104,34 @@ def listar_empresas() -> list[dict]:
     return sorted(empresas, key=lambda x: x['ticker'])
 
 
+def listar_acoes() -> list[dict]:
+    """
+    Retorna lista de ações disponíveis na base JSON local, excluindo
+    ativos que estejam registrados como FIIs no portfólio ou pela sua classificação setorial.
+    """
+    import src.portfolio as pt
+    
+    todas = listar_empresas()
+    port = pt.load_portfolio()
+    
+    fiis_pos = port.get('fiis', {}).get('posicoes', {})
+    fiis_sim = port.get('fiis', {}).get('simulacoes', {})
+    
+    # Conjunto de tickers que são explicitamente cadastrados como FIIs na carteira
+    tickers_fii = set(fiis_pos.keys()).union(set(fiis_sim.keys()))
+    
+    # Adicionar também FIIs que ainda não estão na carteira mas têm setor de FII
+    base_json = carregar_base_json()
+    for tk, info in base_json.items():
+        setor = str(info.get('setor', '')).lower()
+        # Se for um FII óbvio (termina em 11 e setor imobiliário)
+        if tk.endswith('11') and any(s in setor for s in ['fundo', 'shopping', 'logística', 'logistica', 'laje', 'renda', 'papel', 'híbrido', 'fiagro']):
+            tickers_fii.add(tk)
+            
+    acoes = [e for e in todas if e['ticker'] not in tickers_fii]
+    return acoes
+
+
 def adicionar_empresa(ticker: str, nome: str = '', setor: str = 'outros') -> bool:
     """
     Adiciona uma nova empresa à base JSON para ser listada e ter fallback.
@@ -245,6 +273,17 @@ def _buscar_fundamentus(ticker: str) -> dict | None:
             # CAPEX não disponível no fundamentus
             'capex_milhoes':            None,
         }
+
+        # Extrair Número de Ações exato via PL / VPA
+        # A API do yfinance frequentemente retorna apenas as ações da classe (ex: PN) 
+        # para empresas brasileiras, distorcendo o Valuation. O cálculo via PL/VPA 
+        # é a forma mais precisa de descobrir o total absoluto de ações emitidas.
+        vpa_val = dados['vpa']
+        patrim_milhoes = dados['patrimonio_liquido_milhoes']
+        if vpa_val and vpa_val > 0 and patrim_milhoes:
+            dados['num_acoes_milhoes'] = patrim_milhoes / vpa_val
+        else:
+            dados['num_acoes_milhoes'] = None
 
         # Estimar DPA a partir de DY × preço
         if dados.get('dy') and dados.get('preco_atual'):

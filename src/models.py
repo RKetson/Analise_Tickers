@@ -36,6 +36,17 @@ def _resultado_erro(mensagem: str, detalhes: dict | None = None) -> dict:
     return {
         'preco_justo': None,
         'valido': False,
+        'aviso': False,
+        'erro': mensagem,
+        'detalhes': detalhes or {},
+    }
+
+def _resultado_aviso(mensagem: str, detalhes: dict | None = None) -> dict:
+    """Cria dict indicando que o método não é aplicável (aviso visual mais leve)."""
+    return {
+        'preco_justo': None,
+        'valido': False,
+        'aviso': True,
         'erro': mensagem,
         'detalhes': detalhes or {},
     }
@@ -46,6 +57,7 @@ def _resultado_ok(preco_justo: float, detalhes: dict) -> dict:
     return {
         'preco_justo': round(float(preco_justo), 2),
         'valido': True,
+        'aviso': False,
         'erro': None,
         'detalhes': detalhes,
     }
@@ -114,7 +126,14 @@ def calcular_graham(
             'pvp_implicito': round(valor_intrinseco / vpa, 2),
             'margem_seguranca_aplicada': margem_seguranca,
             'formula': (
-                f'√(22,5 × {lpa:.2f} × {vpa:.2f}) = {valor_intrinseco:.2f}'
+                fr'\begin{{aligned}} '
+                fr'& \text{{1. Valor Intrínseco (Graham):}} \\[6pt] '
+                fr'& VI = \sqrt{{22{{,}}5 \times \text{{LPA}} \times \text{{VPA}}}} \\[6pt] '
+                fr'& VI = \sqrt{{22{{,}}5 \times {lpa:.2f} \times {vpa:.2f}}} = {valor_intrinseco:.2f} \\[12pt] '
+                fr'& \text{{2. Aplicação da Margem de Segurança ({margem_seguranca*100:.0f}\%):}} \\[6pt] '
+                fr'& P = VI \times (1 - \text{{Margem}}) \\[6pt] '
+                fr'& P = {valor_intrinseco:.2f} \times (1 - {margem_seguranca:.2f}) = {preco_com_ms:.2f} '
+                fr'\end{{aligned}}'
             ),
         }
 
@@ -180,9 +199,14 @@ def calcular_bazin(
                 'dpa_base': round(dpa_base, 4),
                 'dpa_mais_recente': dpas[-1],
                 'taxa_retorno': taxa_retorno,
-                'metodo_dpa': metodo_dpa,
                 'dy_implicito': taxa_retorno,
-                'formula': f'{dpa_base:.4f} / {taxa_retorno:.4f} = {preco_teto:.2f}',
+                'formula': (
+                    fr'\begin{{aligned}} '
+                    fr'& \text{{1. Preço Teto de Bazin:}} \\[6pt] '
+                    fr'& P = \frac{{\text{{DPA Médio/Base}}}}{{\text{{Taxa Mínima de Retorno}}}} \\[8pt] '
+                    fr'& P = \frac{{{dpa_base:.4f}}}{{{taxa_retorno:.4f}}} = {preco_teto:.2f} '
+                    fr'\end{{aligned}}'
+                ),
             },
         )
     except Exception as exc:
@@ -242,12 +266,16 @@ def calcular_gordon(
             {
                 'dpa_atual': dpa_atual,
                 'dpa_proximo_ano': round(dpa_proximo, 4),
-                'g_crescimento': g,
-                'k_desconto': k,
                 'spread_k_g': round(k - g, 4),
                 'formula': (
-                    f'{dpa_atual:.4f} × (1 + {g:.4f}) / '
-                    f'({k:.4f} - {g:.4f}) = {preco_justo:.2f}'
+                    fr'\begin{{aligned}} '
+                    fr'& \text{{1. Projeção do Dividendo (Ano 1):}} \\[6pt] '
+                    fr'& DPA_1 = DPA_0 \times (1 + g) \\[6pt] '
+                    fr'& DPA_1 = {dpa_atual:.4f} \times (1 + {g:.4f}) = {dpa_proximo:.4f} \\[12pt] '
+                    fr'& \text{{2. Gordon (Crescimento Perpétuo):}} \\[6pt] '
+                    fr'& P = \frac{{DPA_1}}{{k - g}} \\[8pt] '
+                    fr'& P = \frac{{{dpa_proximo:.4f}}}{{{k:.4f} - {g:.4f}}} = {preco_justo:.2f} '
+                    fr'\end{{aligned}}'
                 ),
             },
         )
@@ -302,9 +330,9 @@ def calcular_fcd(
         divida = float(divida_liquida_milhoes) if divida_liquida_milhoes is not None else 0.0
 
         if fcl <= 0:
-            return _resultado_erro(
-                f'FCL negativo ou zero (R$ {fcl:.0f} mi) — FCD não aplicável '
-                'a empresas que não geram caixa livre.',
+            return _resultado_aviso(
+                f'Empresa com FCL negativo (R$ {fcl:.0f} mi). '
+                'O método de fluxo de caixa descontado não é aplicável a empresas que estão queimando caixa.',
                 {'fcl_base': fcl},
             )
 
@@ -368,12 +396,18 @@ def calcular_fcd(
                 'soma_vp_fase1_milhoes': round(soma_vp_fase1, 2),
                 'fcl_terminal_milhoes': round(fcl_terminal, 2),
                 'valor_terminal_milhoes': round(valor_terminal, 2),
-                'vp_terminal_milhoes': round(vp_terminal, 2),
-                'equity_milhoes': round(equity, 2),
                 'num_acoes_milhoes': n_acoes,
                 'formula': (
-                    f'Equity = VP(FCLs) + VP(VT) = '
-                    f'{soma_vp_fase1:.0f} + {vp_terminal:.0f} = {equity:.0f} mi'
+                    fr'\begin{{aligned}} '
+                    fr'& \text{{1. Valor Presente da Fase de Crescimento (1 a {int(anos_fase1)} anos):}} \\[6pt] '
+                    fr'& VP(\text{{Fase 1}}) = \sum \frac{{FCL_t}}{{(1 + WACC)^t}} = {soma_vp_fase1:.2f} \text{{ mi}} \\[12pt] '
+                    fr'& \text{{2. Valor Terminal (Perpetuidade):}} \\[6pt] '
+                    fr'& VT = \frac{{FCL_{{último}} \times (1 + g_{{term}})}}{{WACC - g_{{term}}}} = {valor_terminal:.2f} \text{{ mi}} \\[8pt] '
+                    fr'& VP(VT) = \frac{{{valor_terminal:.2f}}}{{(1 + {wacc:.4f})^{{{int(anos_fase1)}}}}} = {vp_terminal:.2f} \text{{ mi}} \\[12pt] '
+                    fr'& \text{{3. Valor por Ação:}} \\[6pt] '
+                    fr'& \text{{Equity}} = VP(\text{{Fase 1}}) + VP(VT) = {equity:.2f} \text{{ mi}} \\[8pt] '
+                    fr'& P = \frac{{\text{{Equity}}}}{{\text{{Nº Ações}}}} = \frac{{{equity:.2f}}}{{{n_acoes:.2f}}} = {preco_justo:.2f} '
+                    fr'\end{{aligned}}'
                 ),
             },
         )
@@ -409,6 +443,9 @@ def calcular_ev_ebitda(
         dict padrão com 'preco_justo', 'valido', 'erro', 'detalhes'.
     """
     try:
+        if multiplo_setor is not None and multiplo_setor <= 0:
+            return _resultado_aviso('Múltiplo EV/EBITDA não se aplica a este setor (ex: Financeiro).')
+
         params = [ebitda_milhoes, multiplo_setor, divida_liquida_milhoes, num_acoes_milhoes]
         if any(v is None for v in params):
             return _resultado_erro(
@@ -422,16 +459,13 @@ def calcular_ev_ebitda(
         n_acoes = float(num_acoes_milhoes)
 
         if ebitda <= 0:
-            return _resultado_erro(
-                f'EBITDA negativo (R$ {ebitda:.0f} mi) — '
-                'múltiplo EV/EBITDA não aplicável a empresas não-rentáveis.'
+            return _resultado_aviso(
+                f'EBITDA negativo (R$ {ebitda:.0f} mi). '
+                'Múltiplo EV/EBITDA não aplicável a empresas com prejuízo operacional.'
             )
 
         if n_acoes <= 0:
             return _resultado_erro('Número de ações deve ser positivo.')
-
-        if multiplo <= 0:
-            return _resultado_erro('Múltiplo EV/EBITDA deve ser positivo.')
 
         ev_justo = ebitda * multiplo
         equity_justo = ev_justo - divida
@@ -455,11 +489,18 @@ def calcular_ev_ebitda(
                 'multiplo_setor': multiplo,
                 'ev_justo_milhoes': round(ev_justo, 2),
                 'divida_liquida_milhoes': divida,
-                'equity_justo_milhoes': round(equity_justo, 2),
                 'num_acoes_milhoes': n_acoes,
                 'formula': (
-                    f'{ebitda:.0f} × {multiplo}x − {divida:.0f} = '
-                    f'{equity_justo:.0f} mi / {n_acoes:.0f} mi ações'
+                    fr'\begin{{aligned}} '
+                    fr'& \text{{1. Enterprise Value (Valor da Firma):}} \\[6pt] '
+                    fr'& EV = \text{{EBITDA}} \times \text{{Múltiplo Setorial}} \\[6pt] '
+                    fr'& EV = {ebitda:.2f} \times {multiplo:.2f}x = {ev_justo:.2f} \text{{ mi}} \\[12pt] '
+                    fr'& \text{{2. Patrimônio Líquido (Equity):}} \\[6pt] '
+                    fr'& \text{{Equity}} = EV - \text{{Dívida Líquida}} \\[6pt] '
+                    fr'& \text{{Equity}} = {ev_justo:.2f} - ({divida:.2f}) = {equity_justo:.2f} \text{{ mi}} \\[12pt] '
+                    fr'& \text{{3. Valor por Ação:}} \\[6pt] '
+                    fr'& P = \frac{{\text{{Equity}}}}{{\text{{Nº Ações}}}} = \frac{{{equity_justo:.2f}}}{{{n_acoes:.2f}}} = {preco_justo:.2f} '
+                    fr'\end{{aligned}}'
                 ),
             },
         )
@@ -540,6 +581,19 @@ def calcular_buffett(lpa: float, roe: float, payout: float, wacc: float, pl_said
                 'vpl_preco': round(vpl_preco, 2),
                 'vpl_dividendos': round(vpl_dividendos, 2),
                 'taxa_desconto_wacc': round(wacc, 4),
+                'formula': (
+                    fr'\begin{{aligned}} '
+                    fr'& \text{{1. Crescimento Sustentável (g):}} \\[6pt] '
+                    fr'& g = ROE \times (1 - \text{{Payout}}) = {roe:.2f} \times (1 - {payout_val:.2f}) = {g_sustentavel:.4f} \\[12pt] '
+                    fr'& \text{{2. Valor de Saída (Ano {anos}):}} \\[6pt] '
+                    fr'& LPA_{{{anos}}} = LPA_0 \times (1 + g)^{{{anos}}} = {lpa:.2f} \times (1 + {g_sustentavel:.4f})^{{{anos}}} = {lpa_t:.2f} \\[6pt] '
+                    fr'& P_{{{anos}}} = LPA_{{{anos}}} \times \text{{P/L}}_{{Alvo}} = {lpa_t:.2f} \times {pl_projetado:.2f} = {preco_futuro:.2f} \\[12pt] '
+                    fr'& \text{{3. Valor Presente (Desconto = {wacc*100:.1f}\%):}} \\[6pt] '
+                    fr'& VP(P_{{{anos}}}) = \frac{{{preco_futuro:.2f}}}{{(1 + {wacc:.4f})^{{{anos}}}}} = {vpl_preco:.2f} \\[8pt] '
+                    fr'& VP(\text{{Dividendos recebidos}}) = {vpl_dividendos:.2f} \\[8pt] '
+                    fr'& P = VP(P_{{{anos}}}) + VP(\text{{Dividendos}}) = {preco_justo:.2f} '
+                    fr'\end{{aligned}}'
+                ),
             }
         )
     except Exception as e:

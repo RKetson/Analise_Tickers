@@ -19,7 +19,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import config
 from src.data_loader import (
-    carregar_dados_empresa, listar_empresas, carregar_multiplos_setor,
+    carregar_dados_empresa, listar_empresas, listar_acoes, carregar_multiplos_setor,
     obter_parametros_padrao, adicionar_empresa, salvar_dados_manuais
 )
 from src.models import calcular_todos
@@ -236,6 +236,12 @@ def build_params(ticker: str, setor: str, dados: dict, overrides: dict = None) -
         'anos_projecao': st.session_state.get('anos_projecao', config.ANOS_PROJECAO_FCD),
         'g_terminal': st.session_state.get('ipca', config.G_TERMINAL_PADRAO),
     }
+
+    # Carrega parâmetros editados pelo usuário na sessão atual
+    custom_session = st.session_state.get('custom_params_session', {}).get(ticker, {})
+    if custom_session:
+        params.update(custom_session)
+
     if overrides:
         params.update(overrides)
     return params
@@ -275,10 +281,18 @@ def method_card_html(label: str, emoji: str, resultado: dict, preco_atual: float
     pj = resultado.get('preco_justo')
 
     if not valido or pj is None:
+        erro_msg = resultado.get('erro', 'Parâmetros inválidos ou insuficientes para este método.')
+        is_aviso = resultado.get('aviso', False)
+        cor = '#ffd700' if is_aviso else '#ff4757'
+        icone = 'ℹ️' if is_aviso else '⚠️'
+        titulo = 'Não Aplicável' if is_aviso else 'Não Calculado'
         return f"""
-        <div class='val-card border-gray'>
+        <div class='val-card' style='border-left: 3px solid {cor}; min-height: 135px;'>
             <div style='font-size:10px;color:#8b949e;text-transform:uppercase;letter-spacing:1px'>{emoji} {label}</div>
-            <div style='color:#ff4757;font-size:.82rem;margin-top:8px'>⚠️ {resultado.get('erro','N/D')[:70]}</div>
+            <div style='color:{cor};font-size:.85rem;margin-top:12px;line-height:1.4;'>
+                <strong style='font-size:1rem'>{icone} {titulo}</strong><br>
+                <span style='color:#8b949e;font-size:.78rem'>{erro_msg}</span>
+            </div>
         </div>"""
 
     ms = calcular_margem(preco_atual, pj)
@@ -572,7 +586,7 @@ def page_valuation():
         <div class='app-sub'>Análise completa por empresa · Premissas editáveis · 5 métodos</div>
     </div>""", unsafe_allow_html=True)
 
-    empresas = listar_empresas()
+    empresas = listar_acoes()
     opcoes = {f"{e['ticker']} — {e['nome']}": e['ticker'] for e in empresas}
     sel_label = st.selectbox('Selecionar empresa', list(opcoes.keys()),
                               index=list(opcoes.values()).index(
@@ -617,135 +631,96 @@ def page_valuation():
 
     # ── Tab 1: Dados & Premissas ──────────────────────────────────────────────
     with tab1:
-        st.markdown("<div class='sec-hdr'>Dados Fundamentais</div>", unsafe_allow_html=True)
-        st.markdown("<div style='color:#8b949e;font-size:.75rem;margin-top:-10px;margin-bottom:15px;'>"
-                    "🕒 <i>Campos com este símbolo frequentemente exigem atualização manual lendo os relatórios do RI, "
-                    "pois apis gratuitas podem defasar ou distorcer (ex: efeitos não-recorrentes).</i></div>", 
-                    unsafe_allow_html=True)
-
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            preco_atual = st.number_input('💲 Preço Atual (R$)',
-                value=float(dados_orig.get('preco_atual') or 0.0), min_value=0.0, step=0.01,
-                help='Cotação atual da ação na B3. Fonte: corretora, fundamentus.com.br, Investing.com')
-            lpa = st.number_input('📊 LPA — Lucro por Ação (R$)',
-                value=float(dados_orig.get('lpa') or 0.0), step=0.01,
-                help='Lucro Líquido ÷ Nº Ações. Encontre no DRE do RI ou fundamentus. '
-                     'Use LPA dos últimos 12 meses (TTM). EXCLUIR eventos não-recorrentes.')
-            vpa = st.number_input('🏦 VPA — Valor Patrimonial por Ação (R$)',
-                value=float(dados_orig.get('vpa') or 0.0), min_value=0.0, step=0.01,
-                help='Patrimônio Líquido ÷ Nº Ações. Encontre no Balanço Patrimonial (RI/CVM).')
-        with c2:
-            roe = st.number_input('📈 ROE (%)',
-                value=float((dados_orig.get('roe') or 0) * 100), min_value=0.0, max_value=200.0, step=0.1,
-                help='Retorno sobre PL. ROE > 15% = excelente. Encontre no fundamentus ou DRE/BP.') / 100
-            ebitda = st.number_input('💹 EBITDA (R$ milhões) 🕒',
-                value=float(dados_orig.get('ebitda_milhoes') or 0.0), min_value=0.0, step=10.0,
-                help='EBITDA do último exercício. Encontre no DRE + Notas (RI). '
-                     'AJUSTAR por eventos não-recorrentes (provisões, ganhos de arbitragem).')
-            fcl = st.number_input('💰 FCL — Fluxo Caixa Livre (R$ mi) 🕒',
-                value=float(dados_orig.get('fcl_milhoes') or 0.0), step=10.0,
-                help='FCO − CAPEX. Encontre na DFC (RI/CVM). FCL < 0 impossibilita o FCD. '
-                     'EXCLUIR variações não-recorrentes de capital de giro.')
-        with c3:
-            divida = st.number_input('🏋️ Dívida Líquida (R$ milhões) 🕒',
-                value=float(dados_orig.get('divida_liquida_milhoes') or 0.0), step=100.0,
-                help='Dívida Bruta − Caixa. Use o Balanço (RI). '
-                     'D/EBITDA > 3x é sinal de alerta. Bancos: use Índice de Basileia.')
-            capex = st.number_input('🏗️ CAPEX (R$ milhões) 🕒',
-                value=float(dados_orig.get('capex_milhoes') or 0.0), min_value=0.0, step=10.0,
-                help='Investimentos em ativos fixos. Encontre na DFC (atividades de investimento). '
-                     'CAPEX/EBITDA > 70% = empresa intensiva em capital.')
-            num_acoes = st.number_input('🔢 Nº de Ações (milhões)',
-                value=float(emp_cfg.get('num_acoes_milhoes') or dados_orig.get('num_acoes_milhoes_param') or 1.0),
-                min_value=0.1, step=1.0,
-                help='Total de ações em circulação. Encontre no RI ou calcule: PL ÷ VPA.')
-
-        st.markdown("<div class='sec-hdr'>Histórico de Dividendos (DPA)</div>", unsafe_allow_html=True)
-        dpa_hist = dados_orig.get('dpa_historico', [0, 0, 0])
-        dpa_hist = list(dpa_hist) + [0, 0, 0]
-        dc1, dc2, dc3 = st.columns(3)
-        with dc1:
-            dpa1 = st.number_input('DPA Ano -2 (R$)',
-                value=float(dpa_hist[0] if len(dpa_hist) > 0 else 0), min_value=0.0, step=0.01,
-                help='Dividendo por Ação pago 2 anos atrás. '
-                     'Encontre em: RI da empresa, fundamentus ou extrato de proventos na corretora. '
-                     'EXCLUIR dividendos extraordinários para o Bazin.')
-        with dc2:
-            dpa2 = st.number_input('DPA Ano -1 (R$)',
-                value=float(dpa_hist[1] if len(dpa_hist) > 1 else 0), min_value=0.0, step=0.01,
-                help='Dividendo por Ação pago 1 ano atrás.')
-        with dc3:
-            dpa3 = st.number_input('DPA Último Ano (R$)',
-                value=float(dpa_hist[2] if len(dpa_hist) > 2 else 0), min_value=0.0, step=0.01,
-                help='Dividendo por Ação do último exercício — o mais recente.')
-        dpa_lista = [x for x in [dpa1, dpa2, dpa3] if x > 0]
-
-        st.markdown("<div class='sec-hdr'>Crescimento Histórico</div>", unsafe_allow_html=True)
-        gc1, gc2 = st.columns(2)
-        with gc1:
-            g_lucro = st.number_input('📊 Crescimento Lucro 5a (%) 🕒',
-                value=float((dados_orig.get('crescimento_lucro_5a') or 0.06) * 100),
-                min_value=-50.0, max_value=50.0, step=0.5,
-                help='CAGR do LPA nos últimos 5 anos: (LPA_atual/LPA_5a)^(1/5)−1. '
-                     'Usado como g na Fase 1 do FCD. Seja conservador — não extrapole crescimento passado.') / 100
-        with gc2:
-            g_dpa = st.number_input('💰 Crescimento DPA 5a (%) 🕒',
-                value=float((dados_orig.get('crescimento_dpa_5a') or 0.06) * 100),
-                min_value=-50.0, max_value=50.0, step=0.5,
-                help='CAGR do DPA nos últimos 5 anos. Usado como g no Modelo de Gordon. '
-                     'Calcule: (DPA_atual/DPA_5a)^(1/5)−1.') / 100
-
         st.markdown("<div class='sec-hdr'>Parâmetros de Valuation</div>", unsafe_allow_html=True)
+        st.markdown("<div style='color:#8b949e;font-size:.85rem;margin-bottom:15px;'>"
+                    "Ajuste as premissas de projeção de cada método. Dados fundamentalistas puros (LPA, VPA, FCL) "
+                    "devem ser editados na aba 'Entrada Manual'.</div>", unsafe_allow_html=True)
+
+        # Carrega parâmetros costumizados em sessão, se houver
+        custom_p = st.session_state.get('custom_params_session', {}).get(ticker, {})
+        
         selic = st.session_state.get('selic', config.SELIC_ANUAL)
         premio = config.PREMIO_RISCO_SETOR.get(setor, 0.05)
         wacc_default = selic + premio
         wacc_cfg = emp_cfg.get('wacc')
-        wacc_inicial = wacc_cfg if wacc_cfg is not None else wacc_default
+        wacc_inicial = custom_p.get('wacc', wacc_cfg if wacc_cfg is not None else wacc_default)
+        
+        margem_seguranca_inicial = custom_p.get('margem_seguranca', st.session_state.get('margem_seguranca', config.MARGEM_SEGURANCA_GRAHAM))
 
-        pc1, pc2, pc3 = st.columns(3)
-        with pc1:
-            wacc = st.number_input('🏦 WACC / Custo do Capital (%)',
-                value=round(wacc_inicial * 100, 1), min_value=5.0, max_value=40.0, step=0.5,
-                help=f'Padrão do Setor {setor}: {wacc_default:.1%}. Se salvo no banco, este valor sobrepõe a regra do setor.') / 100
-            taxa_bazin = st.number_input('🏠 Taxa Bazin (% a.a.)',
-                value=st.session_state.get('taxa_bazin', config.DY_MINIMO_BAZIN) * 100,
-                min_value=3.0, max_value=15.0, step=0.5,
-                help='Taxa mínima de dividend yield exigida por Bazin (padrão 6%). '
-                     'Preço-Teto = DPA_médio ÷ taxa. Taxa maior → preço-teto menor (mais conservador).') / 100
-            payout_default = 0.50
-            payout_buffett = st.number_input('🦅 Payout Buffett (%) 🕒',
-                value=float(payout_default * 100), min_value=0.0, max_value=100.0, step=1.0,
-                help='Percentual de lucro distribuído como dividendos. Por segurança, o padrão é 50%. '
-                     'Ajuste manualmente conforme a política de retenção da empresa.') / 100
-        with pc2:
-            g_fcd_ui = st.number_input('📈 g FCD — Cresc. FCL Fase 1 (%)',
-                value=min(float(g_lucro * 100), 20.0), min_value=-10.0, max_value=25.0, step=0.5,
-                help='Taxa de crescimento do FCL na fase de projeção. '
-                     'Use o histórico de crescimento de lucro como base. Limite máximo recomendado: 15%.') / 100
-            anos_proj = st.number_input('📅 Anos de Projeção FCD',
-                value=int(st.session_state.get('anos_projecao', 10)), min_value=5, max_value=15, step=1,
-                help='Horizonte de projeção da Fase 1 do FCD. Padrão: 10 anos.')
-            pl_setor_default = config.MULTIPLO_PL_SETOR.get(setor, config.BUFFETT_PL_MAXIMO)
-            pl_buffett = st.number_input('🦅 P/L Projetado (Buffett) 🕒',
-                value=float(pl_setor_default), min_value=1.0, max_value=50.0, step=0.5,
-                help='Múltiplo de saída estimado para o P/L no ano 10. Por padrão utiliza o múltiplo setorial (Teto de 15x).')
-        with pc3:
-            roe_buffett_default = min(200.0, max(0.0, float((dados_orig.get('roe') or 0.15) * 100)))
-            roe_buffett = st.number_input('🦅 ROE Projetado (Buffett) (%) 🕒',
-                value=roe_buffett_default, min_value=0.0, max_value=200.0, step=0.5,
-                help='Rentabilidade sobre o patrimônio projetada. Na fórmula de Buffett, o crescimento de lucros depende deste ROE.') / 100
-            g_gordon = st.number_input('💰 g Gordon — Cresc. Dividendos (%)',
-                value=min(float(g_dpa * 100), 15.0), min_value=0.0, max_value=20.0, step=0.5,
-                help='Taxa de crescimento perpétuo dos dividendos para o Modelo de Gordon. '
-                     'Deve ser < WACC. Geralmente = IPCA projetado para empresas maduras.') / 100
-            g_terminal = st.session_state.get('ipca', config.G_TERMINAL_PADRAO)
-            multiplos = carregar_multiplos_setor()
-            multiplo_ev_default = multiplos.get(setor, {}).get('ev_ebitda')
-            multiplo_ev = st.number_input('📊 Múltiplo EV/EBITDA (setorial)',
-                value=float(multiplo_ev_default or 6.0), min_value=1.0, max_value=25.0, step=0.5,
-                help=f'Múltiplo EV/EBITDA de referência do setor {setor}. '
-                     'Padrão baseado em médias históricas do mercado brasileiro.') if multiplo_ev_default else 0.0
+        # --- SEÇÕES POR MÉTODO ---
+        c1, c2, c3 = st.columns(3)
+        
+        with c1:
+            with st.container(border=True):
+                st.markdown("##### 📍 Método Graham")
+                margem_seguranca = st.number_input('Margem de Segurança (%)',
+                    value=float(margem_seguranca_inicial * 100), min_value=0.0, max_value=80.0, step=1.0,
+                    help='Desconto exigido sobre o valor intrínseco. Padrão: 33%.') / 100
+                
+            with st.container(border=True):
+                st.markdown("##### 📍 Método Bazin")
+                taxa_b_inicial = custom_p.get('taxa_bazin', st.session_state.get('taxa_bazin', config.DY_MINIMO_BAZIN))
+                taxa_bazin = st.number_input('Taxa Bazin (% a.a.)',
+                    value=taxa_b_inicial * 100, min_value=3.0, max_value=15.0, step=0.5,
+                    help='Taxa mínima de dividend yield exigida por Bazin (padrão 6%).') / 100
+                
+        with c2:
+            with st.container(border=True):
+                st.markdown("##### 📍 Método FCD")
+                wacc_fcd = st.number_input('WACC / Custo de Capital (%)',
+                    value=round(wacc_inicial * 100, 1), min_value=5.0, max_value=40.0, step=0.5, key="wacc_fcd",
+                    help=f'Usado para descontar fluxos futuros. Padrão Setor {setor}: {wacc_default:.1%}.') / 100
+                    
+                g_fcd_inicial = custom_p.get('g_fcd', min(float(dados_orig.get('crescimento_lucro_5a') or 0.06), 0.20))
+                g_fcd_ui = st.number_input('Cresc. FCL Fase 1 (%)',
+                    value=float(g_fcd_inicial * 100), min_value=-10.0, max_value=25.0, step=0.5,
+                    help='Taxa de crescimento do FCL na fase de projeção.') / 100
+                    
+                anos_inicial = custom_p.get('anos_projecao', int(st.session_state.get('anos_projecao', 10)))
+                anos_proj = st.number_input('Anos de Projeção',
+                    value=int(anos_inicial), min_value=5, max_value=15, step=1)
+                
+            with st.container(border=True):
+                st.markdown("##### 📍 Método Gordon")
+                g_gordon_inicial = custom_p.get('g_gordon', min(float(dados_orig.get('crescimento_dpa_5a') or 0.06), 0.15))
+                g_gordon = st.number_input('Cresc. Dividendos Perpetuidade (%)',
+                    value=float(g_gordon_inicial * 100), min_value=0.0, max_value=20.0, step=0.5,
+                    help='Taxa de crescimento perpétuo dos dividendos.') / 100
+                
+                # Sincronizar WACC Gordon e FCD (o usuário pediu sincronia visual)
+                wacc_gordon = st.number_input('Taxa de Desconto (WACC) (%)',
+                    value=wacc_fcd * 100, min_value=5.0, max_value=40.0, step=0.5, key="wacc_gordon", disabled=True,
+                    help="Sincronizado com o WACC do FCD.") / 100
+
+        with c3:
+            with st.container(border=True):
+                st.markdown("##### 📍 Método EV/EBITDA")
+                multiplos = carregar_multiplos_setor()
+                multiplo_ev_default = multiplos.get(setor, {}).get('ev_ebitda')
+                if multiplo_ev_default is not None:
+                    mev_inicial = custom_p.get('multiplo_ev_ebitda', float(multiplo_ev_default or 6.0))
+                    multiplo_ev = st.number_input('Múltiplo EV/EBITDA Alvo',
+                        value=float(mev_inicial), min_value=1.0, max_value=25.0, step=0.5,
+                        help=f'Padrão baseado no setor {setor}.')
+                else:
+                    st.info('Múltiplo EV/EBITDA não se aplica a empresas do setor financeiro (Bancos, Seguradoras).')
+                    multiplo_ev = 0.0
+
+            with st.container(border=True):
+                st.markdown("##### 📍 Método Buffett")
+                payout_inicial = custom_p.get('payout_buffett', 0.50)
+                payout_buffett = st.number_input('Payout Projetado (%)',
+                    value=float(payout_inicial * 100), min_value=0.0, max_value=100.0, step=1.0) / 100
+                    
+                pl_setor_default = config.MULTIPLO_PL_SETOR.get(setor, config.BUFFETT_PL_MAXIMO)
+                pl_inicial = custom_p.get('pl_buffett', pl_setor_default)
+                pl_buffett = st.number_input('P/L Projetado Saída',
+                    value=float(pl_inicial), min_value=1.0, max_value=50.0, step=0.5)
+                    
+                roe_buffett_default = min(2.0, max(0.0, float(dados_orig.get('roe') or 0.15)))
+                roe_inicial = custom_p.get('roe_buffett', roe_buffett_default)
+                roe_buffett = st.number_input('ROE Projetado (%)',
+                    value=roe_inicial * 100, min_value=0.0, max_value=200.0, step=0.5) / 100
 
         # Seleção de métodos
         st.markdown("<div class='sec-hdr'>Métodos a Calcular</div>", unsafe_allow_html=True)
@@ -770,36 +745,35 @@ def page_valuation():
         with calc_col:
             calcular = st.button('🧮 Calcular Valuation', use_container_width=True)
         with save_col:
-            salvar = st.button('💾 Salvar Dados no Banco', use_container_width=True, help="Salva estas edições permanentemente para o caso dos dados online ficarem indisponíveis.")
+            salvar = st.button('💾 Salvar Parâmetros Customizados', use_container_width=True, help="Salva estas premissas para a empresa na sessão.")
 
         if calcular or salvar or True:  # sempre calcular para manter estado
+            # Preenche dados calc puramente com a origem
             dados_calc = dict(dados_orig)
-            dados_calc.update({
-                'preco_atual': preco_atual, 'lpa': lpa, 'vpa': vpa, 'roe': roe,
-                'ebitda_milhoes': ebitda, 'fcl_milhoes': fcl,
-                'divida_liquida_milhoes': divida, 'capex_milhoes': capex,
-                'num_acoes_milhoes_param': num_acoes, 'dpa_historico': dpa_lista,
-                'crescimento_lucro_5a': g_lucro, 'crescimento_dpa_5a': g_dpa,
-                'wacc': wacc,
-            })
-
+            dados_calc['wacc'] = wacc_fcd # WACC ainda é considerado dado fundamental em alguns scripts, então atualizamos
+            
+            preco_atual = float(dados_orig.get('preco_atual') or 0.0)
+            
             if salvar:
-                if salvar_dados_manuais(ticker, dados_calc):
-                    st.success('✅ Dados salvos permanentemente na base local!')
-                    st.cache_data.clear()
-                else:
-                    st.error('❌ Erro ao salvar os dados.')
+                st.success('✅ Parâmetros de valuation atualizados na sessão!')
+
+            g_terminal = st.session_state.get('ipca', config.G_TERMINAL_PADRAO)
             params_calc = {
-                'wacc': wacc, 'taxa_bazin': taxa_bazin, 'g_fcd': g_fcd_ui,
-                'g_gordon': g_gordon, 'k_gordon': wacc, 'g_terminal': g_terminal,
+                'wacc': wacc_fcd, 'taxa_bazin': taxa_bazin, 'g_fcd': g_fcd_ui,
+                'g_gordon': g_gordon, 'k_gordon': wacc_gordon, 'g_terminal': g_terminal,
                 'anos_projecao': int(anos_proj),
-                'multiplo_ev_ebitda': multiplo_ev if multiplo_ev_default else None,
-                'margem_seguranca': st.session_state.get('margem_seguranca', 0.33),
+                'multiplo_ev_ebitda': multiplo_ev,
+                'margem_seguranca': margem_seguranca,
                 'bazin_usar_media': True,
                 'payout_buffett': payout_buffett,
                 'pl_buffett': pl_buffett,
                 'roe_buffett': roe_buffett,
             }
+            
+            # Salva na sessão para priorizar a edição do usuário ao mudar de página
+            if 'custom_params_session' not in st.session_state:
+                st.session_state['custom_params_session'] = {}
+            st.session_state['custom_params_session'][ticker] = params_calc
             st.session_state['_calc_dados'] = dados_calc
             st.session_state['_calc_params'] = params_calc
             st.session_state['_calc_result'] = calcular_todos(dados_calc, params_calc)
@@ -851,7 +825,19 @@ def page_valuation():
                         st.plotly_chart(gauge_margem(ms_m, f'{info[1]} {info[0]}'),
                                         use_container_width=True, key=f'gauge_{key}')
                     else:
-                        st.markdown(f"<div style='text-align:center;color:#ff4757;padding:20px'>{info[1]}<br><small>{res.get('erro','N/D')[:40]}</small></div>", unsafe_allow_html=True)
+                        erro_msg = res.get('erro','Não foi possível calcular')
+                        is_aviso = res.get('aviso', False)
+                        cor = '#ffd700' if is_aviso else '#ff4757'
+                        bg_rgba = 'rgba(255,215,0,0.02)' if is_aviso else 'rgba(255,71,87,0.02)'
+                        bord_rgba = 'rgba(255,215,0,0.3)' if is_aviso else 'rgba(255,71,87,0.3)'
+                        icone = 'ℹ️' if is_aviso else '⚠️'
+                        st.markdown(f"""
+                        <div style='height:200px; display:flex; flex-direction:column; justify-content:center; align-items:center; border:1px dashed {bord_rgba}; border-radius:12px; background:{bg_rgba}; margin:10px; padding:15px'>
+                            <div style='font-size:1.8rem;margin-bottom:8px'>{icone}</div>
+                            <div style='color:{cor};font-size:11px;text-align:center;font-weight:700;text-transform:uppercase;letter-spacing:1px;margin-bottom:8px'>{info[1]} {info[0]}</div>
+                            <div style='color:#8b949e;font-size:11px;text-align:center;line-height:1.4'>{erro_msg}</div>
+                        </div>
+                        """, unsafe_allow_html=True)
 
             # Cards de métodos
             st.markdown("<div class='sec-hdr'>Detalhamento por Método</div>", unsafe_allow_html=True)
@@ -863,11 +849,11 @@ def page_valuation():
                 with card_cols[idx % 3]:
                     res = calc.get(key, {})
                     st.markdown(method_card_html(info[0], info[1], res, preco_c), unsafe_allow_html=True)
-                    with st.expander(f'Fórmula — {info[0]}', expanded=False):
+                    with st.expander(f'Cálculo Passo a Passo — {info[0]}', expanded=False):
                         det = res.get('detalhes', {})
                         formula = det.get('formula', '')
                         if formula:
-                            st.code(formula, language=None)
+                            st.latex(formula)
                         for k, v in det.items():
                             if k not in ('formula', 'fcls_projetados') and v is not None:
                                 if isinstance(v, float):
@@ -1075,18 +1061,18 @@ def page_comparativo():
     st.markdown("""
     <div class='app-hdr'>
         <div class='app-title'>⚖️ Comparativo de Empresas</div>
-        <div class='app-sub'>Análise lado a lado · Radar de indicadores · Todos os métodos</div>
+        <div class='app-sub'>Compare múltiplos e margens de diferentes ativos lado a lado</div>
     </div>""", unsafe_allow_html=True)
 
-    empresas = listar_empresas()
-    opcoes = [f"{e['ticker']} — {e['nome']}" for e in empresas]
-    selecionadas = st.multiselect('Selecionar empresas (2 a 5)', opcoes,
-                                   default=opcoes[:4], max_selections=5)
+    empresas = listar_acoes()
+    opcoes = {f"{e['ticker']} - {e['nome']}": e['ticker'] for e in empresas}
+    selecionadas = st.multiselect('Selecionar empresas (2 a 5)', list(opcoes.keys()),
+                                   default=list(opcoes.keys())[:4], max_selections=5)
     if len(selecionadas) < 2:
         st.warning('Selecione pelo menos 2 empresas para comparar.')
         return
 
-    tickers_sel = [s.split(' — ')[0] for s in selecionadas]
+    tickers_sel = [opcoes[s] for s in selecionadas]
     multiplos = carregar_multiplos_setor()
 
     rows = []
@@ -1232,7 +1218,9 @@ def page_manual():
                 
     st.markdown("<div style='color:#8b949e;font-size:.75rem;margin-bottom:15px;'>"
                 "🕒 <i>Campos com este símbolo frequentemente exigem atualização manual lendo os relatórios do RI, "
-                "pois apis gratuitas podem defasar ou distorcer (ex: efeitos não-recorrentes).</i></div>", 
+                "pois apis gratuitas podem defasar ou distorcer (ex: efeitos não-recorrentes).</i><br>"
+                "🤖 <i>Campos com este símbolo são utilizados exclusivamente pela IA na Análise de Qualidade "
+                "e NÃO impactam os cálculos matemáticos dos Valuations.</i></div>", 
                 unsafe_allow_html=True)
 
     with st.form('form_manual'):
@@ -1268,7 +1256,7 @@ def page_manual():
                       '**Importância:** Fundamento do método Graham. Representa o valor contábil por ação.\n\n'
                       '**Como calcular:** PL (Balanço Patrimonial) ÷ Nº Ações. Encontre no RI ou CVM.'))
         with l3:
-            m_roe = st.number_input('📈 ROE (%)',
+            m_roe = st.number_input('📈 ROE Atual (%) 🤖',
                 value=float((dados.get('roe') or 0) * 100), min_value=0.0, max_value=200.0, step=0.1,
                 help=('**O que é:** Retorno sobre Patrimônio Líquido = Lucro Líquido ÷ PL.\n\n'
                       '**Importância:** Mede eficiência da empresa. ROE > 15% = excelente, '
@@ -1321,7 +1309,7 @@ def page_manual():
                       '**Como encontrar:** Balanço Patrimonial → Passivo (Empréstimos e Financiamentos) '
                       '− Ativo (Caixa). Notas Explicativas dão o detalhe.\n\n'
                       '⚠️ **Bancos/Seguradoras:** Não usar D/EBITDA. Usar Índice de Basileia.'))
-            m_capex = st.number_input('🏗️ CAPEX (R$ milhões) 🕒',
+            m_capex = st.number_input('🏗️ CAPEX (R$ milhões) 🕒 🤖',
                 value=float(dados.get('capex_milhoes') or 0), min_value=0.0, step=10.0,
                 help=('**O que é:** Capital Expenditure — investimentos em ativos fixos (imobilizado, intangível).\n\n'
                       '**Importância:** CAPEX/EBITDA > 70% = empresa intensiva em capital → FCL comprimido.\n\n'
@@ -1329,12 +1317,12 @@ def page_manual():
                       '"Aquisição de imobilizado" ou "Adições ao ativo imobilizado". '
                       'Nota: sai negativo na DFC.'))
         with b3:
-            m_pl = st.number_input('🏦 Patrimônio Líquido (R$ milhões)',
+            m_pl = st.number_input('🏦 Patrimônio Líquido (R$ mi) 🤖',
                 value=float(dados.get('patrimonio_liquido_milhoes') or 0), min_value=0.0, step=100.0,
                 help=('**O que é:** Ativos − Passivos. Capital dos acionistas.\n\n'
                       '**Importância:** Base de cálculo do VPA e ROE.\n\n'
                       '**Como encontrar:** Balanço Patrimonial → Patrimônio Líquido total (RI ou CVM).'))
-            m_receita = st.number_input('📊 Receita Líquida (R$ milhões) 🕒',
+            m_receita = st.number_input('📊 Receita Líquida (R$ mi) 🕒 🤖',
                 value=float(dados.get('receita_liquida_milhoes') or 0), min_value=0.0, step=100.0,
                 help=('**O que é:** Receita total − deduções (impostos sobre vendas, devoluções).\n\n'
                       '**Como encontrar:** DRE → primeira linha após deduções (RI ou CVM).'))
