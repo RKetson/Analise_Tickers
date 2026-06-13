@@ -397,7 +397,7 @@ def calcular_fcd(
                 'formula': (
                     fr'\begin{{aligned}} '
                     fr'& \text{{0. Taxa de Crescimento (g):}} \\[6pt] '
-                    fr'& g = (1 - \text{{Payout}}) \times \text{{ROE}} = (1 - {payout:.2f}) \times {roe:.4f} = {g_sustentavel:.4f} \text{{ (}}{(g_sustentavel*100):.2f}\text{{%)}} \\[12pt] '
+                    fr'& g = (1 - \text{{Payout}}) \times \text{{ROE}} = (1 - {payout:.2f}) \times {roe:.4f} = {g_sustentavel:.4f} \text{{ (}}{(g_sustentavel*100):.2f}\text{{\%)}} \\[12pt] '
                     fr'& \text{{1. Valor Presente da Fase de Crescimento (1 a {int(anos_fase1)} anos):}} \\[6pt] '
                     fr'& VP(\text{{Fase 1}}) = \sum_{{t=1}}^{{{int(anos_fase1)}}} \frac{{\text{{Lucro}}_t}}{{(1 + WACC)^t}} = {soma_vp_fase1:.2f} \text{{ mi}} \\[12pt] '
                     fr'& \text{{2. Valor Terminal (Perpetuidade):}} \\[6pt] '

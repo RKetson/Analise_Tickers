@@ -684,18 +684,23 @@ def page_valuation():
                 st.markdown(f"<div style='font-size:0.85rem; color:#8b949e'>Lucro Projetado (Ano 1): <b>R$ {lucro_ano1_ui:.2f} mi</b></div>", unsafe_allow_html=True)
                 
                 payout_fcd_ui = st.number_input('Payout Projetado (Fase 1) (%)',
-                    value=float(custom_p.get('payout_fcd', 0.50)) * 100, min_value=0.0, max_value=100.0, step=1.0,
+                    value=float(custom_p.get('payout_fcd', 0.50)) * 100, step=1.0,
                     help='Usado para calcular a taxa de retenção e o crescimento (g).') / 100
                 
                 roe_implicito = float(dados_orig.get('roe') or 0.15)
                 roe_fcd_ui = st.number_input('ROE Projetado (Fase 1) (%)',
-                    value=float(custom_p.get('roe_implicito', roe_implicito)) * 100, min_value=0.0, step=1.0,
+                    value=float(custom_p.get('roe_implicito', roe_implicito)) * 100, step=1.0,
                     help='Usado junto com o Payout para projetar o crescimento sustentável (g).') / 100
                     
                 anos_inicial = custom_p.get('anos_projecao', int(st.session_state.get('anos_projecao', 10)))
                 anos_proj = st.number_input('Anos de Projeção',
-                    value=int(anos_inicial), min_value=5, max_value=15, step=1)
+                    value=int(anos_inicial), min_value=1, max_value=15, step=1)
                 
+                g_terminal_inicial = custom_p.get('g_terminal', st.session_state.get('ipca', config.G_TERMINAL_PADRAO))
+                g_terminal_ui = st.number_input('Crescimento na Perpetuidade (%)',
+                    value=float(g_terminal_inicial * 100), min_value=0.0, max_value=15.0, step=0.5,
+                    help='Taxa de crescimento perpétuo usada no Valor Terminal (Gordon). Padrão: IPCA projetado.') / 100
+
                 st.markdown(f"<div style='font-size:0.8rem; color:#8b949e'>g (Fase 1) implícito: <b>{((1-payout_fcd_ui)*roe_fcd_ui*100):.1f}%</b> a.a.</div>", unsafe_allow_html=True)
                 
             with st.container(border=True):
@@ -728,17 +733,17 @@ def page_valuation():
                 st.markdown("##### 📍 Método Buffett")
                 payout_inicial = custom_p.get('payout_buffett', 0.50)
                 payout_buffett = st.number_input('Payout Projetado (%)',
-                    value=float(payout_inicial * 100), min_value=0.0, max_value=100.0, step=1.0) / 100
+                    value=float(payout_inicial * 100), step=1.0) / 100
                     
                 pl_setor_default = config.MULTIPLO_PL_SETOR.get(setor, config.BUFFETT_PL_MAXIMO)
                 pl_inicial = custom_p.get('pl_buffett', pl_setor_default)
                 pl_buffett = st.number_input('P/L Projetado Saída',
-                    value=float(pl_inicial), min_value=1.0, max_value=50.0, step=0.5)
+                    value=float(pl_inicial), step=0.5)
                     
                 roe_buffett_default = min(2.0, max(0.0, float(dados_orig.get('roe') or 0.15)))
                 roe_inicial = custom_p.get('roe_buffett', roe_buffett_default)
                 roe_buffett = st.number_input('ROE Projetado (%)',
-                    value=roe_inicial * 100, min_value=0.0, max_value=200.0, step=0.5) / 100
+                    value=roe_inicial * 100, step=0.5) / 100
 
         # Seleção de métodos
         st.markdown("<div class='sec-hdr'>Métodos a Calcular</div>", unsafe_allow_html=True)
@@ -775,11 +780,10 @@ def page_valuation():
             if salvar:
                 st.success('✅ Parâmetros de valuation atualizados na sessão!')
 
-            g_terminal = st.session_state.get('ipca', config.G_TERMINAL_PADRAO)
             params_calc = {
                 'wacc': wacc_fcd, 'taxa_bazin': taxa_bazin, 
                 'pct_aumento_lucro': pct_aumento, 'lucro_ano1_milhoes': lucro_ano1_ui, 'payout_fcd': payout_fcd_ui, 'roe_implicito': roe_fcd_ui,
-                'g_gordon': g_gordon, 'k_gordon': wacc_gordon, 'g_terminal': g_terminal,
+                'g_gordon': g_gordon, 'k_gordon': wacc_gordon, 'g_terminal': g_terminal_ui,
                 'anos_projecao': int(anos_proj),
                 'multiplo_ev_ebitda': multiplo_ev,
                 'margem_seguranca': margem_seguranca,
@@ -900,10 +904,12 @@ def page_valuation():
                 for w in w_vals:
                     row = {}
                     for g in g_vals:
-                        r = _fcd(dados_s.get('fcl_milhoes', 0), dados_s.get('num_acoes_milhoes_param', 1),
-                                  w, g, params_c.get('anos_projecao', 10),
-                                  params_c.get('g_terminal', 0.045),
-                                  dados_s.get('divida_liquida_milhoes', 0))
+                        roe_sens = params_c.get('roe_implicito', 0.15)
+                        payout_sens = params_c.get('payout_fcd', 0.50)
+                        lucro_sens = params_c.get('lucro_ano1_milhoes', dados_s.get('lucro_liquido_milhoes', 0))
+                        r = _fcd(lucro_sens, dados_s.get('num_acoes_milhoes_param', 1),
+                                  w, roe_sens, payout_sens, params_c.get('anos_projecao', 10),
+                                  params_c.get('g_terminal', 0.045))
                         row[f'g={g:.1%}'] = f"R$ {r['preco_justo']:.2f}" if r.get('preco_justo') else 'N/D'
                     sens_data[f'WACC={w:.1%}'] = row
                 df_sens = pd.DataFrame(sens_data).T
@@ -1322,6 +1328,8 @@ def page_manual():
             st.session_state['_calc_metodos_sel'] = {k: True for k in METODO_INFO}
             st.session_state['_emp_cfg'] = cfg
             st.cache_data.clear()
+            if 'custom_params_session' in st.session_state and ticker in st.session_state['custom_params_session']:
+                del st.session_state['custom_params_session'][ticker]
 
             st.success('✅ Dados salvos com sucesso na base local! Redirecionando...')
             import time
@@ -1523,23 +1531,22 @@ def page_metodologia():
     
     ---
     
-    ### 4. Fluxo de Caixa Descontado (FCD / DCF)
+    ### 4. Fluxo de Caixa Descontado (FCD / DCF) — Foco em Lucros
     
-    O método mais complexo e mais utilizado no mundo acadêmico e corporativo. Ele assume que o valor de uma empresa hoje é a soma de todo o dinheiro (caixa) que ela vai colocar no bolso dos acionistas no futuro, descontado pelo custo de oportunidade.
+    Este método assume que o valor da empresa hoje é a soma do dinheiro gerado para os acionistas no futuro, trazido a valor presente por uma taxa de desconto. Nesta versão, utilizamos o Fluxo de Caixa para o Acionista (FCFE) simplificado pelo Lucro Líquido projetado, o que é ideal para instituições financeiras e empresas com alta alavancagem operacional.
     
     **Fórmulas Básicas:**
     
-    $$ Valor\\ da\\ Empresa (EV) = \\sum_{t=1}^{n} \\frac{FCL_t}{(1+WACC)^t} + \\frac{Valor\\ Terminal}{(1+WACC)^n} $$
+    $$ Equity = \\sum_{t=1}^{n} \\frac{Lucro_t}{(1+WACC)^t} + \\frac{Valor\\ Terminal}{(1+WACC)^n} $$
     
-    $$ Preço_{Justo} = \\frac{EV - Divida\\ Liquida + Caixa}{Numero\\ de\\ Ações} $$
+    $$ Preço_{Justo} = \\frac{Equity}{Numero\\ de\\ Ações} $$
     
     **Parâmetros e Cálculos Secundários:**
-    * **$FCL$ (Fluxo de Caixa Livre)**: É o dinheiro que sobra após pagar despesas, impostos e reinvestir na operação. 
-      * *Como calcular:* $FCL = Fluxo\\ Operacional\\ (FCO) - CAPEX\\ (Investimentos)$. Retirado da Demonstração de Fluxo de Caixa (DFC).
-    * **$WACC$ (Custo Médio Ponderado de Capital)**: A taxa de desconto. Funciona como a "gravidade" que puxa o valor do dinheiro no futuro para o presente.
-      * *Como calcular na ferramenta:* Utilizamos um método simplificado somando a Taxa Macro Base (Selic) com um Prêmio de Risco Setorial (ex: Selic 10% + Prêmio Energia 4% = WACC 14%).
-    * **$Valor\\ Terminal$**: O valor da empresa do ano $n$ em diante até o infinito, assumindo um crescimento perpétuo constante.
-      * *Como calcular:* $Valor\\ Terminal = \\frac{FCL_{n} \\times (1 + g_{terminal})}{WACC - g_{terminal}}$. Onde $g_{terminal}$ geralmente é a inflação de longo prazo (IPCA projetado).
+    * **Taxa de Crescimento ($g$)**: A taxa de crescimento sustentável dos lucros na Fase 1. É determinada pela proporção do lucro que a empresa retém versus o quanto ela rentabiliza esse capital.
+      * *Como calcular:* $g = (1 - Payout) \\times ROE$.
+    * **$WACC$ (Custo Médio Ponderado de Capital)**: A taxa de desconto (custo de oportunidade) que pune o tempo e o risco.
+    * **$Valor\\ Terminal$**: O valor da empresa após o último ano projetado ($n$), assumindo crescimento perpétuo (normalmente alinhado à inflação).
+      * *Como calcular:* $Valor\\ Terminal = \\frac{Lucro_{n} \\times (1 + g_{terminal})}{WACC - g_{terminal}}$.
     
     **Aplicações Ideais:**
     * A maioria das empresas da Bolsa, especialmente concessões (rodovias, telecom), indústria, papel/celulose e varejo não-financeiro.
