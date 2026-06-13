@@ -380,4 +380,28 @@ def salvar_metodo_principal(ticker: str, metodo: str) -> bool:
         print(f"Erro ao salvar método principal: {e}")
         return False
 
+def carregar_config_global() -> dict:
+    """Carrega as configurações globais permanentes (ex: macroeconomia, margens globais)."""
+    path = os.path.join(DATA_DIR, 'global_config.json')
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return {}
+    except json.JSONDecodeError as e:
+        print(f'[data_loader] ERRO JSON em global_config.json: {e}')
+        return {}
+
+def salvar_config_global(config_dict: dict) -> bool:
+    """Salva configurações globais permanentemente."""
+    path = os.path.join(DATA_DIR, 'global_config.json')
+    try:
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(config_dict, f, ensure_ascii=False, indent=2)
+        return True
+    except Exception as e:
+        print(f"Erro ao salvar global config: {e}")
+        return False
+
+
 

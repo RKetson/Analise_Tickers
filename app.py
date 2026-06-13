@@ -12,6 +12,7 @@ import pandas as pd
 import numpy as np
 import sys
 import os
+import json
 from datetime import datetime
 
 # ── Path Setup ────────────────────────────────────────────────────────────────
@@ -186,15 +187,24 @@ label { color:#c9d1d9 !important; }
 
 # ── Session State Init ─────────────────────────────────────────────────────────
 def init_session():
+    from src.data_loader import carregar_config_global
+    gc = carregar_config_global()
+    
     defaults = {
         'page': 'dashboard',
-        'selic': config.SELIC_ANUAL,
-        'ipca': config.IPCA_PROJETADO,
-        'taxa_bazin': config.DY_MINIMO_BAZIN,
-        'margem_seguranca': config.MARGEM_SEGURANCA_GRAHAM,
-        'anos_projecao': config.ANOS_PROJECAO_FCD,
-        'multiplos_setor_custom': {},
-        'premio_risco_custom': {},
+        'selic': gc.get('selic', config.SELIC_ANUAL),
+        'ipca': gc.get('ipca', config.IPCA_PROJETADO),
+        'taxa_bazin': gc.get('taxa_bazin', config.DY_MINIMO_BAZIN),
+        'margem_seguranca': gc.get('margem_seguranca', config.MARGEM_SEGURANCA_GRAHAM),
+        'anos_projecao': gc.get('anos_projecao', config.ANOS_PROJECAO_FCD),
+        'multiplos_setor_custom': gc.get('multiplos_setor_custom', {}),
+        'premio_risco_custom': gc.get('premio_risco_custom', {}),
+        
+        'ms_excelente': gc.get('ms_excelente', 33.0),
+        'ms_boa': gc.get('ms_boa', 15.0),
+        'ms_justo': gc.get('ms_justo', 0.0),
+        'ms_cara': gc.get('ms_cara', -20.0),
+        
         'valuation_ticker': 'BBAS3',
         'manual_dados': {},
     }
@@ -236,7 +246,12 @@ def build_params(ticker: str, setor: str, dados: dict, overrides: dict = None) -
         'g_terminal': st.session_state.get('ipca', config.G_TERMINAL_PADRAO),
     }
 
-    # Carrega parâmetros editados pelo usuário na sessão atual
+    # 1. Carrega as premissas salvas permanentemente no JSON
+    premissas_salvas = emp_cfg.get('premissas_valuation', {})
+    if premissas_salvas:
+        params.update(premissas_salvas)
+
+    # 2. Carrega parâmetros editados pelo usuário na sessão atual (sobrepõe as salvas durante a sessão)
     custom_session = st.session_state.get('custom_params_session', {}).get(ticker, {})
     if custom_session:
         params.update(custom_session)
@@ -247,7 +262,12 @@ def build_params(ticker: str, setor: str, dados: dict, overrides: dict = None) -
 
 # ── Helper: Gauge Chart ────────────────────────────────────────────────────────
 def gauge_margem(margem_pct: float, title: str = "Margem de Segurança") -> go.Figure:
-    cor = '#00d4aa' if margem_pct >= 15 else ('#ffd700' if margem_pct >= 0 else '#ff4757')
+    t_exc = st.session_state.get('ms_excelente', 33.0)
+    t_boa = st.session_state.get('ms_boa', 15.0)
+    t_justo = st.session_state.get('ms_justo', 0.0)
+    t_cara = st.session_state.get('ms_cara', -20.0)
+
+    cor = '#00d4aa' if margem_pct >= t_boa else ('#ffd700' if margem_pct >= t_justo else '#ff4757')
     fig = go.Figure(go.Indicator(
         mode='gauge+number',
         value=margem_pct,
@@ -260,13 +280,13 @@ def gauge_margem(margem_pct: float, title: str = "Margem de Segurança") -> go.F
             'bgcolor': 'rgba(255,255,255,0.03)',
             'bordercolor': 'rgba(255,255,255,0.1)',
             'steps': [
-                {'range': [-60, 0],  'color': 'rgba(255,71,87,0.10)'},
-                {'range': [0, 15],   'color': 'rgba(255,215,0,0.07)'},
-                {'range': [15, 33],  'color': 'rgba(0,212,170,0.07)'},
-                {'range': [33, 80],  'color': 'rgba(0,212,170,0.16)'},
+                {'range': [-60, t_justo],  'color': 'rgba(255,71,87,0.10)'},
+                {'range': [t_justo, t_boa],   'color': 'rgba(255,215,0,0.07)'},
+                {'range': [t_boa, t_exc],  'color': 'rgba(0,212,170,0.07)'},
+                {'range': [t_exc, 80],  'color': 'rgba(0,212,170,0.16)'},
             ],
             'threshold': {'line': {'color': '#ffd700', 'width': 2},
-                          'thickness': 0.8, 'value': 33},
+                          'thickness': 0.8, 'value': t_exc},
         }
     ))
     fig.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
@@ -294,11 +314,17 @@ def method_card_html(label: str, emoji: str, resultado: dict, preco_atual: float
             </div>
         </div>"""
 
+    t_exc = st.session_state.get('ms_excelente', 33.0) / 100.0
+    t_boa = st.session_state.get('ms_boa', 15.0) / 100.0
+    t_justo = st.session_state.get('ms_justo', 0.0) / 100.0
+    t_cara = st.session_state.get('ms_cara', -20.0) / 100.0
+    thresholds = {'excelente': t_exc, 'boa': t_boa, 'justo': t_justo, 'caro': t_cara}
+
     ms = calcular_margem(preco_atual, pj)
-    txt, _ = status_margem(ms)
+    txt, _ = status_margem(ms, thresholds)
     ms_pct = (ms or 0) * 100
-    cor_borda = 'border-green' if ms_pct >= 15 else ('border-gold' if ms_pct >= 0 else 'border-red')
-    cor_ms = '#00d4aa' if ms_pct >= 0 else '#ff4757'
+    cor_borda = 'border-green' if ms_pct >= t_boa * 100 else ('border-gold' if ms_pct >= t_justo * 100 else 'border-red')
+    cor_ms = '#00d4aa' if ms_pct >= t_justo * 100 else '#ff4757'
     sinal = '+' if ms_pct >= 0 else ''
 
     return f"""
@@ -407,8 +433,9 @@ def render_sidebar():
 # PAGE: DASHBOARD
 # ══════════════════════════════════════════════════════════════════════════════
 @st.cache_data(ttl=300, show_spinner=False)
-def _carregar_todas_empresas():
-    empresas = listar_empresas()
+def _carregar_todas_empresas(t_exc=0.33, t_boa=0.15, t_justo=0.00, t_cara=-0.20):
+    thresholds = {'excelente': t_exc, 'boa': t_boa, 'justo': t_justo, 'caro': t_cara}
+    empresas = listar_acoes()
     resultados = []
     for emp in empresas:
         ticker = emp['ticker']
@@ -437,7 +464,7 @@ def _carregar_todas_empresas():
                 pm = calc.get('_media')
 
             ms = calcular_margem(preco, pm)
-            txt, em = status_margem(ms)
+            txt, em = status_margem(ms, thresholds)
 
             resultados.append({
                 'ticker': ticker, 'nome': emp['nome'],
@@ -477,26 +504,31 @@ def page_dashboard():
     if atualizar:
         st.cache_data.clear()
 
+    t_exc = st.session_state.get('ms_excelente', 33.0) / 100.0
+    t_boa = st.session_state.get('ms_boa', 15.0) / 100.0
+    t_justo = st.session_state.get('ms_justo', 0.0) / 100.0
+    t_cara = st.session_state.get('ms_cara', -20.0) / 100.0
+
     with st.spinner('Calculando valuations para todas as empresas...'):
-        rows = _carregar_todas_empresas()
+        rows = _carregar_todas_empresas(t_exc, t_boa, t_justo, t_cara)
 
     # KPIs
-    oport = [r for r in rows if r.get('margem_pct', -999) >= 33]
-    boas  = [r for r in rows if 15 <= r.get('margem_pct', -999) < 33]
-    caras = [r for r in rows if r.get('margem_pct', 0) < 0]
+    oport = [r for r in rows if r.get('margem_pct', -999) >= t_exc * 100]
+    boas  = [r for r in rows if t_boa * 100 <= r.get('margem_pct', -999) < t_exc * 100]
+    caras = [r for r in rows if r.get('margem_pct', 0) < t_justo * 100]
 
     k1, k2, k3, k4 = st.columns(4)
     with k1:
         st.markdown(f"""<div class='val-card border-green'>
             <div style='font-size:10px;color:#8b949e;text-transform:uppercase;letter-spacing:1px'>🟢 Excelentes Oportunidades</div>
             <div style='font-size:2.5rem;font-weight:800;color:#00d4aa'>{len(oport)}</div>
-            <div style='font-size:.78rem;color:#8b949e'>Margem de segurança ≥ 33%</div>
+            <div style='font-size:.78rem;color:#8b949e'>Margem de segurança ≥ {t_exc*100:.0f}%</div>
         </div>""", unsafe_allow_html=True)
     with k2:
         st.markdown(f"""<div class='val-card border-gold'>
             <div style='font-size:10px;color:#8b949e;text-transform:uppercase;letter-spacing:1px'>🟡 Boas Oportunidades</div>
             <div style='font-size:2.5rem;font-weight:800;color:#ffd700'>{len(boas)}</div>
-            <div style='font-size:.78rem;color:#8b949e'>Margem entre 15% e 33%</div>
+            <div style='font-size:.78rem;color:#8b949e'>Margem entre {t_boa*100:.0f}% e {t_exc*100:.0f}%</div>
         </div>""", unsafe_allow_html=True)
     with k3:
         st.markdown(f"""<div class='val-card border-red'>
@@ -534,7 +566,76 @@ def page_dashboard():
             st.rerun()
 
     st.markdown("<div class='sec-hdr'>📋 Carteira Monitorada</div>", unsafe_allow_html=True)
-    df = pd.DataFrame(rows)
+    
+    # Definição das Colunas
+    rename = {'ticker':'Ticker','nome':'Empresa','setor':'Setor','preco_atual':'Preço Atual',
+              'metodo_principal': 'Método Principal',
+              'graham':'Graham','bazin':'Bazin','gordon':'Gordon','fcd':'FCD',
+              'ev_ebitda':'EV/EBITDA','buffett':'Buffett','preco_medio':'Preço Principal','margem_pct':'Margem','status':'Status'}
+    todas_colunas = list(rename.values())
+    todos_tickers = [r['ticker'] for r in rows]
+    
+    # Carregar Layout salvo (Streamlit limpa as keys de widgets ao mudar de aba, então precisamos ler caso não exista)
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    layout_path = os.path.join(base_dir, 'data', 'dashboard_layout.json')
+    
+    if "filtro_acoes" not in st.session_state or "filtro_colunas" not in st.session_state:
+        if os.path.exists(layout_path):
+            with open(layout_path, 'r', encoding='utf-8') as f:
+                layout_data = json.load(f)
+            # Garantir que os tickers carregados existam na base atual para não quebrar o componente
+            st.session_state["filtro_acoes"] = [t for t in layout_data.get("filtro_acoes", todos_tickers) if t in todos_tickers]
+            st.session_state["filtro_colunas"] = [c for c in layout_data.get("filtro_colunas", todas_colunas) if c in todas_colunas]
+        else:
+            st.session_state["filtro_acoes"] = todos_tickers
+            st.session_state["filtro_colunas"] = todas_colunas
+
+    f1, f2, f3, f4 = st.columns([3, 1, 3, 1])
+    with f1:
+        tickers_selecionados = st.multiselect(
+            "Filtrar ações:",
+            options=todos_tickers,
+            key="filtro_acoes",
+            help="Selecione quais ações aparecerão na tabela e no gráfico."
+        )
+    with f2:
+        st.write("")
+        if st.button("Todas", key="btn_all_acoes", use_container_width=True):
+            st.session_state["filtro_acoes"] = todos_tickers
+            st.rerun()
+            
+    with f3:
+        colunas_selecionadas = st.multiselect(
+            "Filtrar colunas:",
+            options=todas_colunas,
+            key="filtro_colunas",
+            help="Selecione quais colunas aparecerão na tabela."
+        )
+    with f4:
+        st.write("")
+        if st.button("Todas", key="btn_all_cols", use_container_width=True):
+            st.session_state["filtro_colunas"] = todas_colunas
+            st.rerun()
+            
+    if st.button("💾 Salvar Layout Atual (Filtros e Colunas)", use_container_width=True):
+        layout_dict = {
+            "filtro_acoes": st.session_state["filtro_acoes"],
+            "filtro_colunas": st.session_state["filtro_colunas"]
+        }
+        with open(layout_path, 'w', encoding='utf-8') as f:
+            json.dump(layout_dict, f, indent=4, ensure_ascii=False)
+        st.success("Layout salvo com sucesso! Estas configurações serão mantidas nos próximos acessos.")
+        import time
+        time.sleep(1.5)
+        st.rerun()
+            
+    if not tickers_selecionados:
+        st.info("Selecione ao menos uma ação para visualizar.")
+        return
+        
+    rows_filtradas = [r for r in rows if r['ticker'] in tickers_selecionados]
+    
+    df = pd.DataFrame(rows_filtradas)
     if not df.empty:
         display = df.copy()
         for col in ['preco_atual','preco_medio','graham','bazin','gordon','fcd','ev_ebitda', 'buffett']:
@@ -546,19 +647,15 @@ def page_dashboard():
             display['margem_pct'] = display['margem_pct'].apply(
                 lambda x: f'{x:+.1f}%' if pd.notna(x) else 'N/D'
             )
-        rename = {'ticker':'Ticker','nome':'Empresa','setor':'Setor','preco_atual':'Preço Atual',
-                  'metodo_principal': 'Método Principal',
-                  'graham':'Graham','bazin':'Bazin','gordon':'Gordon','fcd':'FCD',
-                  'ev_ebitda':'EV/EBITDA','buffett':'Buffett','preco_medio':'Preço Principal','margem_pct':'Margem','status':'Status'}
-        cols_show = [c for c in rename if c in display.columns]
+        cols_show = [c for c, alias in rename.items() if c in display.columns and alias in colunas_selecionadas]
         display = display[cols_show].rename(columns=rename)
         st.dataframe(display, use_container_width=True, hide_index=True)
 
     # Gráfico de margens
-    df_chart = pd.DataFrame(rows).dropna(subset=['margem_pct'])
+    df_chart = pd.DataFrame(rows_filtradas).dropna(subset=['margem_pct'])
     if not df_chart.empty:
         st.markdown("<div class='sec-hdr'>📊 Margem de Segurança por Empresa</div>", unsafe_allow_html=True)
-        cores = ['#00d4aa' if v >= 33 else ('#ffd700' if v >= 15 else ('#ff9f43' if v >= 0 else '#ff4757'))
+        cores = ['#00d4aa' if v >= t_exc * 100 else ('#ffd700' if v >= t_boa * 100 else ('#ff9f43' if v >= t_justo * 100 else '#ff4757'))
                  for v in df_chart['margem_pct']]
         fig = go.Figure(go.Bar(
             x=df_chart['ticker'], y=df_chart['margem_pct'],
@@ -566,8 +663,8 @@ def page_dashboard():
             text=[f'{v:+.1f}%' for v in df_chart['margem_pct']],
             textposition='outside', textfont=dict(color='#e6edf3', size=10),
         ))
-        fig.add_hline(y=33, line_dash='dash', line_color='#ffd700', line_width=1.5,
-                      annotation_text='Ideal (33%)', annotation_font_color='#ffd700', annotation_font_size=10)
+        fig.add_hline(y=t_exc * 100, line_dash='dash', line_color='#ffd700', line_width=1.5,
+                      annotation_text=f'Ideal ({t_exc*100:.0f}%)', annotation_font_color='#ffd700', annotation_font_size=10)
         fig.add_hline(y=0, line_color='rgba(255,255,255,0.15)', line_width=1)
         fig.update_layout(**PLOT_CFG, height=300, showlegend=False,
                           xaxis=dict(gridcolor='rgba(255,255,255,0.05)', tickfont=dict(color='#e6edf3', size=11)),
@@ -596,12 +693,21 @@ def page_valuation():
 
     empresas = listar_acoes()
     opcoes = {f"{e['ticker']} — {e['nome']}": e['ticker'] for e in empresas}
+    tickers = list(opcoes.values())
+    
+    # Lógica do Ticker + Query Params para resistir ao F5
+    if '_calc_ticker' not in st.session_state and 'ticker' in st.query_params:
+        if st.query_params['ticker'] in tickers:
+            st.session_state['_calc_ticker'] = st.query_params['ticker']
+
     sel_label = st.selectbox('Selecionar empresa', list(opcoes.keys()),
                               index=list(opcoes.values()).index(
-                                  st.session_state.get('valuation_ticker','BBAS3')
-                              ) if st.session_state.get('valuation_ticker','BBAS3') in opcoes.values() else 0)
+                                  st.session_state.get('_calc_ticker', 'BBAS3')
+                              ) if st.session_state.get('_calc_ticker', 'BBAS3') in opcoes.values() else 0)
+    
     ticker = opcoes[sel_label]
-    st.session_state['valuation_ticker'] = ticker
+    st.session_state['_calc_ticker'] = ticker
+    st.query_params['ticker'] = ticker
 
     with st.spinner(f'Carregando dados de {ticker}...'):
         result = carregar_dados_empresa(ticker)
@@ -643,6 +749,8 @@ def page_valuation():
         custom_p = dict(emp_cfg.get('premissas_valuation', {}))
         custom_p.update(st.session_state.get('custom_params_session', {}).get(ticker, {}))
         
+        st.write("DEBUG custom_p (Premissas Carregadas):", custom_p)
+        
         selic = st.session_state.get('selic', config.SELIC_ANUAL)
         premio = config.PREMIO_RISCO_SETOR.get(setor, 0.05)
         wacc_default = selic + premio
@@ -659,6 +767,7 @@ def page_valuation():
                 st.markdown("##### 📍 Método Graham")
                 margem_seguranca = st.number_input('Margem de Segurança (%)',
                     value=float(margem_seguranca_inicial * 100), min_value=0.0, max_value=80.0, step=1.0,
+                    key=f'ms_{ticker}',
                     help='Desconto exigido sobre o valor intrínseco. Padrão: 33%.') / 100
                 
             with st.container(border=True):
@@ -666,19 +775,21 @@ def page_valuation():
                 taxa_b_inicial = custom_p.get('taxa_bazin', st.session_state.get('taxa_bazin', config.DY_MINIMO_BAZIN))
                 taxa_bazin = st.number_input('Taxa Bazin (% a.a.)',
                     value=taxa_b_inicial * 100, min_value=3.0, max_value=15.0, step=0.5,
+                    key=f'tb_{ticker}',
                     help='Taxa mínima de dividend yield exigida por Bazin (padrão 6%).') / 100
                 
         with c2:
             with st.container(border=True):
                 st.markdown("##### 📍 Método FCD (Lucros)")
                 wacc_fcd = st.number_input('WACC / Custo de Capital (%)',
-                    value=round(wacc_inicial * 100, 1), min_value=5.0, max_value=40.0, step=0.5, key="wacc_fcd",
+                    value=round(wacc_inicial * 100, 1), min_value=5.0, max_value=40.0, step=0.5, key=f"wacc_fcd_{ticker}",
                     help=f'Usado para descontar fluxos futuros. Padrão Setor {setor}: {wacc_default:.1%}.') / 100
                     
                 lucro_base = float(dados_orig.get('lucro_liquido_milhoes') or 0.0)
 
                 pct_aumento = st.number_input('Aumento Projetado Lucro Ano 1 (%)',
                     value=float(custom_p.get('pct_aumento_lucro', 0.0)), step=1.0,
+                    key=f'pct_lucro_{ticker}',
                     help='Percentual de aumento sobre o lucro líquido atual para projetar o Ano 1.')
 
                 lucro_ano1_ui = lucro_base * (1 + pct_aumento / 100)
@@ -686,20 +797,23 @@ def page_valuation():
                 
                 payout_fcd_ui = st.number_input('Payout Projetado (Fase 1) (%)',
                     value=float(custom_p.get('payout_fcd', 0.50)) * 100, step=1.0,
+                    key=f'payout_fcd_{ticker}',
                     help='Usado para calcular a taxa de retenção e o crescimento (g).') / 100
                 
                 roe_implicito = float(dados_orig.get('roe') or 0.15)
                 roe_fcd_ui = st.number_input('ROE Projetado (Fase 1) (%)',
                     value=float(custom_p.get('roe_implicito', roe_implicito)) * 100, step=1.0,
+                    key=f'roe_fcd_{ticker}',
                     help='Usado junto com o Payout para projetar o crescimento sustentável (g).') / 100
                     
                 anos_inicial = custom_p.get('anos_projecao', int(st.session_state.get('anos_projecao', 10)))
                 anos_proj = st.number_input('Anos de Projeção',
-                    value=int(anos_inicial), min_value=1, max_value=15, step=1)
+                    value=int(anos_inicial), min_value=1, max_value=15, step=1, key=f'anos_{ticker}')
                 
                 g_terminal_inicial = custom_p.get('g_terminal', st.session_state.get('ipca', config.G_TERMINAL_PADRAO))
                 g_terminal_ui = st.number_input('Crescimento na Perpetuidade (%)',
                     value=float(g_terminal_inicial * 100), min_value=0.0, max_value=15.0, step=0.5,
+                    key=f'g_term_{ticker}',
                     help='Taxa de crescimento perpétuo usada no Valor Terminal (Gordon). Padrão: IPCA projetado.') / 100
 
                 st.markdown(f"<div style='font-size:0.8rem; color:#8b949e'>g (Fase 1) implícito: <b>{((1-payout_fcd_ui)*roe_fcd_ui*100):.1f}%</b> a.a.</div>", unsafe_allow_html=True)
@@ -709,11 +823,12 @@ def page_valuation():
                 g_gordon_inicial = custom_p.get('g_gordon', min(float(dados_orig.get('crescimento_dpa_5a') or 0.06), 0.15))
                 g_gordon = st.number_input('Cresc. Dividendos Perpetuidade (%)',
                     value=float(g_gordon_inicial * 100), min_value=0.0, max_value=20.0, step=0.5,
+                    key=f'g_gordon_{ticker}',
                     help='Taxa de crescimento perpétuo dos dividendos.') / 100
                 
                 # Sincronizar WACC Gordon e FCD (o usuário pediu sincronia visual)
                 wacc_gordon = st.number_input('Taxa de Desconto (WACC) (%)',
-                    value=wacc_fcd * 100, min_value=5.0, max_value=40.0, step=0.5, key="wacc_gordon", disabled=True,
+                    value=wacc_fcd * 100, min_value=5.0, max_value=40.0, step=0.5, key=f"wacc_gordon_{ticker}", disabled=True,
                     help="Sincronizado com o WACC do FCD.") / 100
 
         with c3:
@@ -725,6 +840,7 @@ def page_valuation():
                     mev_inicial = custom_p.get('multiplo_ev_ebitda', float(multiplo_ev_default or 6.0))
                     multiplo_ev = st.number_input('Múltiplo EV/EBITDA Alvo',
                         value=float(mev_inicial), min_value=1.0, max_value=25.0, step=0.5,
+                        key=f'mev_{ticker}',
                         help=f'Padrão baseado no setor {setor}.')
                 else:
                     st.info('Múltiplo EV/EBITDA não se aplica a empresas do setor financeiro (Bancos, Seguradoras).')
@@ -734,17 +850,17 @@ def page_valuation():
                 st.markdown("##### 📍 Método Buffett")
                 payout_inicial = custom_p.get('payout_buffett', 0.50)
                 payout_buffett = st.number_input('Payout Projetado (%)',
-                    value=float(payout_inicial * 100), step=1.0) / 100
+                    value=float(payout_inicial * 100), step=1.0, key=f'p_buffett_{ticker}') / 100
                     
                 pl_setor_default = float(config.MULTIPLO_PL_SETOR.get(setor, config.BUFFETT_PL_MAXIMO))
                 pl_inicial = custom_p.get('pl_buffett', pl_setor_default)
                 pl_buffett = st.number_input('P/L Projetado Saída',
-                    value=float(pl_inicial), step=0.5)
+                    value=float(pl_inicial), step=0.5, key=f'pl_buffett_{ticker}')
                     
                 roe_buffett_default = float(dados_orig.get('roe') or 0.15)
                 roe_inicial = custom_p.get('roe_buffett', roe_buffett_default)
                 roe_buffett = st.number_input('ROE Projetado (%)',
-                    value=roe_inicial * 100, step=0.5) / 100
+                    value=roe_inicial * 100, step=0.5, key=f'roe_b_{ticker}') / 100
 
         # Seleção de métodos
         st.markdown("<div class='sec-hdr'>Métodos a Calcular</div>", unsafe_allow_html=True)
@@ -755,6 +871,7 @@ def page_valuation():
         metodos_keys = list(METODO_INFO.keys())
         metodos_cols = st.columns(max(1, len(metodos_keys)))
         metodos_sel = {}
+        saved_metodos = custom_p.get('metodos_sel', {})
         for col, key in zip(metodos_cols, metodos_keys):
             info = METODO_INFO[key]
             rec = key in metodos_rec
@@ -762,7 +879,9 @@ def page_valuation():
             if rec:
                 label += " ⭐"
             with col:
-                metodos_sel[key] = st.checkbox(label, value=True, key=f'chk_{key}',
+                # Restaura os checkboxes salvos, padrão é True
+                val = saved_metodos.get(key, True)
+                metodos_sel[key] = st.checkbox(label, value=val, key=f'chk_{key}_{ticker}',
                                                 help=info[2])
 
         calc_col, save_col = st.columns(2)
@@ -789,10 +908,12 @@ def page_valuation():
                 'payout_buffett': payout_buffett,
                 'pl_buffett': pl_buffett,
                 'roe_buffett': roe_buffett,
+                'metodos_sel': metodos_sel
             }
             
             if salvar:
                 salvar_premissas(ticker, params_calc)
+                st.cache_data.clear() # Limpa o cache do dashboard para refletir as novas premissas
                 st.success('✅ Parâmetros de valuation salvos na base de dados com sucesso!')
 
             # Salva na sessão para priorizar a edição do usuário ao mudar de página
@@ -817,15 +938,21 @@ def page_valuation():
         if not calc:
             st.info('⬅️ Configure os dados na aba "Dados & Premissas" e clique em "Calcular Valuation".')
         else:
+            t_exc = st.session_state.get('ms_excelente', 33.0) / 100.0
+            t_boa = st.session_state.get('ms_boa', 15.0) / 100.0
+            t_justo = st.session_state.get('ms_justo', 0.0) / 100.0
+            t_cara = st.session_state.get('ms_cara', -20.0) / 100.0
+            thresholds = {'excelente': t_exc, 'boa': t_boa, 'justo': t_justo, 'caro': t_cara}
+
             pm = calc.get('_media')
             ms = calcular_margem(preco_c, pm)
-            txt, em = status_margem(ms)
+            txt, em = status_margem(ms, thresholds)
             ms_pct = (ms or 0) * 100
 
             # Consenso
-            cor_big = '#00d4aa' if ms_pct >= 0 else '#ff4757'
+            cor_big = '#00d4aa' if ms_pct >= t_justo * 100 else '#ff4757'
             st.markdown(f"""
-            <div class='val-card border-{"green" if ms_pct >= 0 else "red"}' style='text-align:center;padding:28px'>
+            <div class='val-card border-{"green" if ms_pct >= t_justo * 100 else "red"}' style='text-align:center;padding:28px'>
                 <div style='font-size:.8rem;color:#8b949e;text-transform:uppercase;letter-spacing:1.5px'>
                     Preço Justo — Consenso ({calc.get('_num_metodos_validos',0)} Métodos)</div>
                 <div style='font-size:3.2rem;font-weight:800;color:{cor_big};margin:8px 0'>
@@ -1365,6 +1492,24 @@ def page_config():
                 value=float(st.session_state.get('ipca', config.IPCA_PROJETADO) * 100), step=0.25,
                 help='IPCA projetado para o longo prazo. Usado como g terminal no FCD.') / 100
 
+        st.markdown("<div class='sec-hdr'>📊 Limiares de Classificação de Margem</div>", unsafe_allow_html=True)
+        st.markdown("<div style='color:#8b949e;font-size:.82rem;margin-bottom:10px'>Defina os percentuais mínimos de margem de segurança para cada classificação (usados no Dashboard).</div>", unsafe_allow_html=True)
+        t1, t2 = st.columns(2)
+        with t1:
+            nova_ms_exc = st.number_input('Excelente Oportunidade (≥ %)',
+                min_value=15.0, max_value=80.0,
+                value=float(st.session_state.get('ms_excelente', 33.0)), step=1.0)
+            nova_ms_boa = st.number_input('Boa Oportunidade (≥ %)',
+                min_value=0.0, max_value=32.0,
+                value=float(st.session_state.get('ms_boa', 15.0)), step=1.0)
+        with t2:
+            nova_ms_justo = st.number_input('Preço Justo (≥ %)',
+                min_value=-15.0, max_value=14.0,
+                value=float(st.session_state.get('ms_justo', 0.0)), step=1.0)
+            nova_ms_cara = st.number_input('Ligeiramente Caro (≥ %)',
+                min_value=-50.0, max_value=-1.0,
+                value=float(st.session_state.get('ms_cara', -20.0)), step=1.0)
+
         st.markdown("<div class='sec-hdr'>🏠 Método Bazin</div>", unsafe_allow_html=True)
         nova_taxa_b = st.slider('Taxa Mínima de Retorno (%)',
             min_value=3.0, max_value=12.0,
@@ -1429,19 +1574,46 @@ def page_config():
         st.session_state['anos_projecao'] = novos_anos
         st.session_state['multiplos_setor_custom'] = novos_mult
         st.session_state['premio_risco_custom'] = novos_premios
+        
+        st.session_state['ms_excelente'] = nova_ms_exc
+        st.session_state['ms_boa'] = nova_ms_boa
+        st.session_state['ms_justo'] = nova_ms_justo
+        st.session_state['ms_cara'] = nova_ms_cara
+        
+        from src.data_loader import salvar_config_global
+        gc = {
+            'selic': nova_selic,
+            'ipca': novo_ipca,
+            'taxa_bazin': nova_taxa_b,
+            'margem_seguranca': nova_ms,
+            'anos_projecao': novos_anos,
+            'multiplos_setor_custom': novos_mult,
+            'premio_risco_custom': novos_premios,
+            'ms_excelente': nova_ms_exc,
+            'ms_boa': nova_ms_boa,
+            'ms_justo': nova_ms_justo,
+            'ms_cara': nova_ms_cara
+        }
+        salvar_config_global(gc)
+        
         st.cache_data.clear()
-        st.success('✅ Configurações salvas! Valuations recalculados com os novos parâmetros.')
+        st.success('✅ Configurações salvas permanentemente! Valuations recalculados com os novos parâmetros.')
         import time
         time.sleep(1.0)
         st.rerun()
 
     if resetar:
         for k in ['selic','ipca','taxa_bazin','margem_seguranca','anos_projecao',
-                  'multiplos_setor_custom','premio_risco_custom']:
+                  'multiplos_setor_custom','premio_risco_custom',
+                  'ms_excelente', 'ms_boa', 'ms_justo', 'ms_cara']:
             if k in st.session_state:
                 del st.session_state[k]
+                
+        from src.data_loader import salvar_config_global
+        salvar_config_global({}) # Reseta banco global
+        
         st.cache_data.clear()
-        st.success('✅ Configurações resetadas para os valores padrão.')
+        st.success('✅ Configurações resetadas permanentemente para os valores padrão.')
         import time
         time.sleep(1.0)
         st.rerun()
@@ -1606,9 +1778,16 @@ def page_metodologia():
 def main():
     st.markdown(CSS, unsafe_allow_html=True)
     init_session()
+    
+    # Resgatar página da URL se for um F5/Acesso direto
+    if 'page' not in st.session_state and 'page' in st.query_params:
+        st.session_state['page'] = st.query_params['page']
+        
     render_sidebar()
 
     page = st.session_state.get('page', 'dashboard')
+    st.query_params['page'] = page
+    
     if page == 'dashboard':
         page_dashboard()
     elif page == 'carteira':

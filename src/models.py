@@ -692,10 +692,12 @@ def calcular_todos(empresa_dados: dict, parametros: dict) -> dict:
     )
 
     # --- Agregação ---
+    metodos_sel = p.get('metodos_sel', {})
     precos_validos = [
         r['preco_justo']
-        for r in resultados.values()
+        for key, r in resultados.items()
         if isinstance(r, dict) and r.get('valido') and r.get('preco_justo') is not None
+        and metodos_sel.get(key, True)
     ]
 
     resultados['_media'] = (

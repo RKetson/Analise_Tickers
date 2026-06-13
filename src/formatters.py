@@ -146,7 +146,7 @@ def calcular_margem(preco_atual: float, preco_justo: float) -> float | None:
     return (preco_justo - preco_atual) / preco_justo
 
 
-def status_margem(margem: float | None) -> tuple[str, str]:
+def status_margem(margem: float | None, thresholds: dict = None) -> tuple[str, str]:
     """
     Converte a margem de segurança em status textual e emoji de cor.
 
@@ -159,6 +159,7 @@ def status_margem(margem: float | None) -> tuple[str, str]:
 
     Args:
         margem: Margem de segurança decimal retornada por `calcular_margem`.
+        thresholds: Dicionário customizado com limiares (ex: {'excelente': 0.33, 'boa': 0.15, 'justo': 0.00, 'caro': -0.20}).
 
     Returns:
         tuple[str, str]: (descrição_textual, emoji).
@@ -171,15 +172,18 @@ def status_margem(margem: float | None) -> tuple[str, str]:
         >>> status_margem(None)
         ('N/D', '⚪')
     """
+    if thresholds is None:
+        thresholds = {'excelente': 0.33, 'boa': 0.15, 'justo': 0.00, 'caro': -0.20}
+        
     if margem is None:
         return 'N/D', '⚪'
-    if margem >= 0.33:
+    if margem >= thresholds['excelente']:
         return 'Excelente oportunidade', '🟢'
-    elif margem >= 0.15:
+    elif margem >= thresholds['boa']:
         return 'Boa oportunidade', '🟡'
-    elif margem >= 0.00:
+    elif margem >= thresholds['justo']:
         return 'Preço justo', '🟠'
-    elif margem >= -0.20:
+    elif margem >= thresholds['caro']:
         return 'Ligeiramente caro', '🔴'
     else:
         return 'Sobrevalorizado', '🔴'
