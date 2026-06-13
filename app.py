@@ -378,7 +378,7 @@ def render_sidebar():
             <div style='margin-bottom:5px'>🛡️ <strong style='color:#e6edf3'>Margem (Graham):</strong>
                 <span style='color:#4fc3f7'>{st.session_state.get('margem_seguranca',config.MARGEM_SEGURANCA_GRAHAM):.0%}</span></div>
             <div style='color:#30363d;font-size:10px;margin-top:12px'>
-                Dados: fundamentus + yfinance<br>Base curada: dez/2025
+                Base 100% Manual/Offline<br>Cotações online via yfinance
             </div>
         </div>""", unsafe_allow_html=True)
 
@@ -386,11 +386,20 @@ def render_sidebar():
         st.markdown("<div style='font-size:12px;color:#e6edf3;padding:0 8px 8px;font-weight:600'>➕ Adicionar Novo Ticker</div>", unsafe_allow_html=True)
         with st.form("form_add_ticker"):
             novo_ticker = st.text_input("Código na B3", placeholder="Ex: ITUB4, WEGE3").strip().upper()
-            if st.form_submit_button("Buscar e Salvar", use_container_width=True):
+            if st.form_submit_button("Adicionar Ativo", use_container_width=True):
                 if novo_ticker:
                     if adicionar_empresa(novo_ticker):
-                        st.success(f"{novo_ticker} adicionado! Atualize a página se necessário.")
                         st.cache_data.clear()
+                        is_fii = novo_ticker.endswith('11') and not any(novo_ticker.startswith(b) for b in ['TAEE', 'KLBN', 'SANB', 'SAPR', 'ALUP', 'ENGI'])
+                        if not is_fii:
+                            st.success(f"Empresa '{novo_ticker}' criada. Redirecionando para preenchimento de dados...")
+                            st.session_state['page'] = 'manual'
+                            st.session_state['manual_ticker'] = novo_ticker
+                            import time
+                            time.sleep(1.5)
+                            st.rerun()
+                        else:
+                            st.success(f"FII {novo_ticker} adicionado com sucesso.")
                     else:
                         st.error(f"Ticker inválido ou já existe.")
 
@@ -462,7 +471,7 @@ def page_dashboard():
         atualizar = st.button('🔄 Atualizar Dados', use_container_width=True)
     with col_info:
         st.markdown("<div style='color:#8b949e;font-size:.82rem;padding-top:10px'>"
-                    "Busca dados em fundamentus.com.br e yfinance. Pode levar 30–60s.</div>",
+                    "Leitura instantânea da base de dados local.</div>",
                     unsafe_allow_html=True)
 
     if atualizar:
@@ -594,12 +603,8 @@ def page_valuation():
     ticker = opcoes[sel_label]
     st.session_state['valuation_ticker'] = ticker
 
-    col_load, col_fonte = st.columns([1, 4])
-    with col_load:
-        load_btn = st.button('🔄 Buscar Online', use_container_width=True)
-
     with st.spinner(f'Carregando dados de {ticker}...'):
-        result = carregar_dados_empresa(ticker, forcar_online=load_btn)
+        result = carregar_dados_empresa(ticker)
 
     dados_orig  = result['dados']
     emp_cfg     = result['empresa_config']
@@ -608,10 +613,9 @@ def page_valuation():
     erro_online = result.get('erro_online')
     setor       = emp_cfg.get('setor', '')
 
-    with col_fonte:
-        cor_fonte = '#00d4aa' if suc_online else '#ffd700'
-        st.markdown(f"<div style='padding-top:10px;font-size:.82rem;color:{cor_fonte}'>"
-                    f"📡 Fonte: <strong>{fonte}</strong></div>", unsafe_allow_html=True)
+    cor_fonte = '#00d4aa' if suc_online else '#ffd700'
+    st.markdown(f"<div style='padding-top:10px;font-size:.82rem;color:{cor_fonte}'>"
+                f"📡 Fonte Preço: <strong>{fonte}</strong></div>", unsafe_allow_html=True)
 
     if erro_online and not suc_online:
         st.warning(f"⚠️ Dados online indisponíveis — usando base local. ({erro_online[:80]})")
@@ -624,8 +628,8 @@ def page_valuation():
     if descricao:
         st.markdown(f"<div class='al-box al-info'>📋 {descricao}</div>", unsafe_allow_html=True)
 
-    tab1, tab2, tab3, tab4, tab5 = st.tabs([
-        "📊 Dados & Premissas", "📈 Resultados", "🛡️ Análise de Qualidade", "💰 Detalhamento FCD", "📈 Histórico Trimestral"
+    tab1, tab2, tab3, tab4 = st.tabs([
+        "📊 Dados & Premissas", "📈 Resultados", "🛡️ Análise de Qualidade", "💰 Detalhamento FCD"
     ])
 
     # ── Tab 1: Dados & Premissas ──────────────────────────────────────────────
@@ -1028,46 +1032,7 @@ def page_valuation():
                                       legend=dict(font=dict(color='#e6edf3')))
                 st.plotly_chart(fig_fcl, use_container_width=True)
 
-    # ── Tab 5: Histórico Trimestral ───────────────────────────────────────────
-    with tab5:
-        st.markdown("<div class='sec-hdr'>📈 Histórico Trimestral (yfinance)</div>", unsafe_allow_html=True)
-        st.markdown("<div style='color:#8b949e;font-size:.85rem;margin-bottom:15px'>Dados brutos trimestrais obtidos através da API do Yahoo Finance. Útil para verificar defasagens ou validar efeitos não-recorrentes.</div>", unsafe_allow_html=True)
-        
-        from src.data_loader import buscar_historico_trimestral
-        with st.spinner("Buscando histórico na API..."):
-            hist = buscar_historico_trimestral(ticker)
-        
-        if hist and not hist.get('financials', pd.DataFrame()).empty:
-            fin = hist['financials']
-            bs = hist.get('balance_sheet', pd.DataFrame())
-            cf = hist.get('cashflow', pd.DataFrame())
-            
-            metrics = {}
-            if 'Total Revenue' in fin.index: metrics['Receita Líquida'] = fin.loc['Total Revenue']
-            if 'Net Income' in fin.index: metrics['Lucro Líquido'] = fin.loc['Net Income']
-            if 'EBITDA' in fin.index: metrics['EBITDA'] = fin.loc['EBITDA']
-            
-            if not cf.empty:
-                if 'Free Cash Flow' in cf.index: metrics['FCL (Free Cash Flow)'] = cf.loc['Free Cash Flow']
-                elif 'Operating Cash Flow' in cf.index and 'Capital Expenditure' in cf.index:
-                    metrics['FCL (Free Cash Flow)'] = cf.loc['Operating Cash Flow'] + cf.loc['Capital Expenditure']
-            
-            if not bs.empty:
-                if 'Total Debt' in bs.index: metrics['Dívida Bruta'] = bs.loc['Total Debt']
-                if 'Cash And Cash Equivalents' in bs.index: metrics['Caixa e Equivalentes'] = bs.loc['Cash And Cash Equivalents']
-            
-            if metrics:
-                df_hist = pd.DataFrame(metrics).T
-                df_hist.columns = [c.strftime('%Y-%m-%d') if pd.notnull(c) else c for c in df_hist.columns]
-                
-                for col in df_hist.columns:
-                    df_hist[col] = df_hist[col].apply(lambda x: formatar_moeda(x/1e6) + ' mi' if pd.notnull(x) else 'N/D')
-                
-                st.dataframe(df_hist, use_container_width=True)
-            else:
-                st.info("As métricas principais não foram encontradas nos dados trimestrais deste ticker.")
-        else:
-            st.warning("Histórico trimestral indisponível para este ativo.")
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PAGE: COMPARATIVO

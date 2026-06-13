@@ -180,14 +180,14 @@ def salvar_dados_manuais(ticker: str, novos_dados: dict) -> bool:
         empresa['dados'] = {}
         
     for k, v in novos_dados.items():
-        if k in ['preco_atual', 'lpa', 'vpa', 'roe', 'ebitda_milhoes', 'fcl_milhoes', 'divida_liquida_milhoes', 'capex_milhoes', 'crescimento_lucro_5a', 'crescimento_dpa_5a']:
-            empresa['dados'][k] = v
-        elif k == 'dpa_historico':
+        if k == 'dpa_historico':
             empresa['dados']['dpa_historico'] = v
         elif k == 'num_acoes_milhoes_param':
             empresa['num_acoes_milhoes'] = v
         elif k == 'wacc':
             empresa['wacc'] = v
+        else:
+            empresa['dados'][k] = v
 
     empresa['dados_manuais_ativos'] = True
     empresa['data_referencia'] = datetime.now().strftime('%Y-%m-%d')
@@ -203,288 +203,34 @@ def salvar_dados_manuais(ticker: str, novos_dados: dict) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Camada 1: fundamentus
+# Camada Online: Apenas Preço
 # ---------------------------------------------------------------------------
 
-def _buscar_fundamentus(ticker: str) -> dict | None:
+def _buscar_preco_online(ticker: str) -> float | None:
     """
-    Busca dados via biblioteca fundamentus (scraping fundamentus.com.br).
-
-    Normaliza os campos para o formato interno da aplicação.
-    Os campos de valor (Cotacao, LPA, etc.) são convertidos para float.
-    Os campos de escala (EBIT, Div.Liq) são convertidos para R$ milhões.
-
-    Args:
-        ticker: Código de negociação ex.: 'TAEE11', 'VALE3'.
-
-    Returns:
-        dict com chaves 'fonte', 'dados', 'timestamp' ou None em caso de falha.
-    """
-    try:
-        import fundamentus  # type: ignore
-
-        papel = fundamentus.get_papel(ticker)
-        if papel is None or papel.empty:
-            return None
-
-        def _val(key: str, default=None):
-            """Extrai e converte um campo do DataFrame fundamentus."""
-            try:
-                v = papel.get(key)
-                if v is None:
-                    return default
-                # fundamentus retorna Series de um elemento
-                raw = v.iloc[0] if hasattr(v, 'iloc') else v
-                raw_str = str(raw).strip()
-                if not raw_str or raw_str == '-':
-                    return default
-                
-                is_percent = '%' in raw_str
-                parsed = float(raw_str.replace(',', '.').replace('%', ''))
-                
-                if is_percent:
-                    parsed = parsed / 100.0
-                elif key in ['LPA', 'VPA', 'PL', 'PVP'] and '.' not in raw_str:
-                    # Fundamentus converte "3,51" para "351", então dividimos por 100
-                    parsed = parsed / 100.0
-                
-                return parsed
-            except Exception:
-                return default
-
-        # fundamentus atualizou os nomes das colunas (ex: EBIT -> EBIT_12m)
-        ebit_raw = _val('EBIT_12m')
-        div_liq_raw = _val('Div_Liquida')
-        patrim_raw = _val('Patrim_Liq')
-        lucro_raw = _val('Lucro_Liquido_12m')
-
-        dados: dict = {
-            'preco_atual':              _val('Cotacao'),
-            'lpa':                      _val('LPA'),
-            'vpa':                      _val('VPA'),
-            'pl':                       _val('PL'),
-            'pvp':                      _val('PVP'),
-            'dy':                       _val('Div_Yield'),
-            'roe':                      _val('ROE'),
-            # Converter de R$ absoluto → R$ milhões
-            'ebitda_milhoes':           None, # PROIBIDO INFERIR EBITDA A PARTIR DO EBIT
-            'divida_liquida_milhoes':   div_liq_raw / 1e6 if div_liq_raw else None,
-            'patrimonio_liquido_milhoes': patrim_raw / 1e6 if patrim_raw else None,
-            'lucro_liquido_milhoes':    lucro_raw / 1e6 if lucro_raw else None,
-            # CAPEX não disponível no fundamentus
-            'capex_milhoes':            None,
-        }
-
-        # Extrair Número de Ações exato via PL / VPA
-        # A API do yfinance frequentemente retorna apenas as ações da classe (ex: PN) 
-        # para empresas brasileiras, distorcendo o Valuation. O cálculo via PL/VPA 
-        # é a forma mais precisa de descobrir o total absoluto de ações emitidas.
-        vpa_val = dados['vpa']
-        patrim_milhoes = dados['patrimonio_liquido_milhoes']
-        if vpa_val and vpa_val > 0 and patrim_milhoes:
-            dados['num_acoes_milhoes'] = patrim_milhoes / vpa_val
-        else:
-            dados['num_acoes_milhoes'] = None
-
-        # Estimar DPA a partir de DY × preço
-        if dados.get('dy') and dados.get('preco_atual'):
-            dados['dpa_estimado'] = round(dados['dy'] * dados['preco_atual'], 4)
-
-        return {
-            'fonte': 'fundamentus',
-            'dados': dados,
-            'timestamp': datetime.now().isoformat(),
-        }
-
-    except ImportError:
-        return None
-    except Exception:
-        return None
-
-
-# ---------------------------------------------------------------------------
-# Camada 2: yfinance
-# ---------------------------------------------------------------------------
-
-def _buscar_yfinance(ticker: str) -> dict | None:
-    """
-    Busca dados via yfinance (Yahoo Finance API).
-
+    Busca o preço atual da ação via yfinance.
     Acrescenta '.SA' ao ticker para o mercado brasileiro (B3).
-    Tenta extrair histórico de dividendos e FCL dos demonstrativos.
-
-    Args:
-        ticker: Código de negociação ex.: 'VALE3'.
-
-    Returns:
-        dict com chaves 'fonte', 'dados', 'timestamp' ou None em caso de falha.
     """
     try:
-        import yfinance as yf  # type: ignore
-
-        stock = yf.Ticker(ticker + '.SA')
+        import yfinance as yf
+        stock = yf.Ticker(ticker.upper() + '.SA')
         info = stock.info
-
-        if not info or not (info.get('regularMarketPrice') or info.get('currentPrice')):
-            return None
-
-        def _get(key: str, default=None):
-            """Extrai campo do info dict com conversão segura para float."""
-            v = info.get(key)
-            if v is None or v == 'None' or v == 0:
-                return default
-            try:
-                return float(v)
-            except (TypeError, ValueError):
-                return default
-
-        # --- Histórico de dividendos (últimos 3 anos) ---
-        dpa_historico: list[float] = []
-        try:
-            dividends = stock.dividends
-            if dividends is not None and not dividends.empty:
-                div_por_ano = dividends.groupby(dividends.index.year).sum()
-                dpa_historico = [
-                    round(float(v), 4)
-                    for v in div_por_ano.iloc[-3:].values
-                ]
-        except Exception:
-            dpa_historico = []
-
-        # --- Fluxo de Caixa Livre (FCO − CAPEX) ---
-        fcl: float | None = None
-        capex: float | None = None
-        try:
-            cf = stock.cashflow
-            if cf is not None and not cf.empty:
-                op_cf_row = next(
-                    (k for k in cf.index if 'operating' in k.lower() and 'cash' in k.lower()),
-                    None,
-                )
-                capex_row = next(
-                    (k for k in cf.index if 'capital' in k.lower() and 'expenditure' in k.lower()),
-                    None,
-                )
-                if op_cf_row:
-                    op_cf_val = cf.loc[op_cf_row].iloc[0]
-                    if capex_row:
-                        capex_val = cf.loc[capex_row].iloc[0]
-                        # No yfinance, CAPEX é negativo → somar para obter FCL
-                        fcl = (float(op_cf_val) + float(capex_val)) / 1e6
-                        capex = abs(float(capex_val)) / 1e6
-                    else:
-                        fcl = float(op_cf_val) / 1e6
-        except Exception:
-            pass
-
-        # --- Número de ações ---
-        shares_raw = _get('sharesOutstanding')
-        num_acoes_milhoes = shares_raw / 1e6 if shares_raw else None
-
-        # --- Dívida líquida estimada ---
-        divida_bruta = _get('totalDebt')
-        caixa = _get('totalCash')
-        divida_liquida = None
-        if divida_bruta is not None and caixa is not None:
-            divida_liquida = (divida_bruta - caixa) / 1e6
-
-        dados: dict = {
-            'preco_atual':                _get('regularMarketPrice') or _get('currentPrice'),
-            'lpa':                        _get('trailingEps'),
-            'vpa':                        _get('bookValue'),
-            'pl':                         _get('trailingPE'),
-            'pvp':                        _get('priceToBook'),
-            'dy':                         _get('dividendYield'),
-            'roe':                        _get('returnOnEquity'),
-            'ebitda_milhoes':             _get('ebitda', 0.0) / 1e6 if _get('ebitda') else None,
-            'divida_liquida_milhoes':     divida_liquida,
-            'capex_milhoes':              capex,
-            'fcl_milhoes':               fcl,
-            'num_acoes_milhoes':          num_acoes_milhoes,
-            'lucro_liquido_milhoes':      _get('netIncomeToCommon', 0.0) / 1e6 if _get('netIncomeToCommon') else None,
-            'receita_liquida_milhoes':    _get('totalRevenue', 0.0) / 1e6 if _get('totalRevenue') else None,
-            'dpa_historico':              dpa_historico,
-        }
-
-        return {
-            'fonte': 'yfinance',
-            'dados': dados,
-            'timestamp': datetime.now().isoformat(),
-        }
-
-    except ImportError:
-        return None
+        if info:
+            preco = info.get('regularMarketPrice') or info.get('currentPrice')
+            if preco:
+                return float(preco)
     except Exception:
-        return None
-
-
-# ---------------------------------------------------------------------------
-# Mescla de dados
-# ---------------------------------------------------------------------------
-
-def _mesclar_dados(dados_online: dict, dados_json: dict) -> dict:
-    """
-    Mescla dados online com a base JSON curada.
-
-    Prioridade: dados online sobrescrevem o JSON apenas se o valor online
-    for não-None e não-zero. Campos críticos como 'dpa_historico' têm
-    tratamento especial: o histórico online substitui o do JSON somente
-    quando contém ≥ 2 anos de dados.
-
-    Args:
-        dados_online: Dict com dados obtidos de fundamentus/yfinance.
-        dados_json: Dict com dados da base companies.json.
-
-    Returns:
-        dict: Dados mesclados priorizando informações online.
-    """
-    resultado = dict(dados_json)
-    online = dados_online.get('dados', {})
-
-    for chave, valor in online.items():
-        if chave == 'dpa_historico':
-            # Substituir histórico online apenas se tiver ≥ 2 anos
-            if valor and len(valor) >= 2:
-                resultado[chave] = valor
-            # Caso contrário, mantém o JSON
-        elif chave == 'dpa_estimado':
-            # Usar DPA estimado para enriquecer, não substituir
-            pass
-        elif valor is not None and valor != 0:
-            resultado[chave] = valor
-
-    # Enriquecer dpa_historico com DPA estimado se histórico do JSON é incompleto
-    dpa_estimado = online.get('dpa_estimado')
-    if dpa_estimado and not resultado.get('dpa_historico'):
-        resultado['dpa_historico'] = [dpa_estimado]
-
-    return resultado
-
+        pass
+    return None
 
 # ---------------------------------------------------------------------------
 # Ponto de entrada principal
 # ---------------------------------------------------------------------------
 
-def carregar_dados_empresa(ticker: str, forcar_online: bool = False) -> dict:
+def carregar_dados_empresa(ticker: str) -> dict:
     """
-    Carrega dados completos de uma empresa usando fallback multicamada.
-
-    Sempre enriquece os dados online com os campos curados do JSON local
-    (setor, alertas de analista, eventos não-recorrentes, número de ações).
-
-    Args:
-        ticker: Código do ativo ex.: 'BBAS3', 'VALE3', 'TAEE11'.
-        forcar_online: Se True, tenta buscar online mesmo que o JSON exista.
-                       Padrão False prioriza velocidade para dados curados.
-
-    Returns:
-        dict com as seguintes chaves:
-            dados             : dict — dados fundamentais mesclados
-            fonte             : str  — 'fundamentus' | 'yfinance' | 'json' | 'misto'
-            empresa_config    : dict — configuração completa da empresa no JSON
-            sucesso_online    : bool — True se alguma fonte online foi usada
-            erro_online       : str | None — mensagem de erro das fontes online
-            timestamp         : str — ISO 8601 do momento da consulta
+    Carrega dados completos de uma empresa a partir da base JSON local.
+    Sempre busca o preço atualizado online.
     """
     base = carregar_base_json()
     empresa_config = base.get(ticker.upper(), {})
@@ -493,71 +239,25 @@ def carregar_dados_empresa(ticker: str, forcar_online: bool = False) -> dict:
     # Injetar número de ações como campo de dados (usado pelos modelos)
     if empresa_config.get('num_acoes_milhoes'):
         dados_json['num_acoes_milhoes_param'] = empresa_config['num_acoes_milhoes']
+        
+    # Garantir fallback se não existir
+    if not dados_json.get('num_acoes_milhoes_param'):
+        dados_json['num_acoes_milhoes_param'] = empresa_config.get('num_acoes_milhoes')
 
-    resultado_online: dict | None = None
-    fonte = 'json'
-    erro_online: str | None = None
     sucesso_online = False
+    erro_online = None
 
-    if empresa_config.get('dados_manuais_ativos') and not forcar_online:
-        # Usuário preencheu manualmente. Pular busca online para não sobrescrever.
-        pass
+    # Tenta atualizar o preço
+    preco = _buscar_preco_online(ticker)
+    if preco is not None:
+        dados_json['preco_atual'] = preco
+        sucesso_online = True
     else:
-        if forcar_online and empresa_config.get('dados_manuais_ativos'):
-            empresa_config['dados_manuais_ativos'] = False
-            base[ticker.upper()]['dados_manuais_ativos'] = False
-            path = os.path.join(DATA_DIR, 'companies.json')
-            try:
-                with open(path, 'w', encoding='utf-8') as f:
-                    json.dump(base, f, ensure_ascii=False, indent=2)
-            except Exception:
-                pass
-
-        # --- Camada 1: fundamentus ---
-        try:
-            resultado_online = _buscar_fundamentus(ticker.upper())
-            if resultado_online:
-                fonte = 'fundamentus'
-                sucesso_online = True
-        except Exception as exc:
-            erro_online = f'fundamentus: {str(exc)[:120]}'
-
-        # --- Camada 2: yfinance (fallback) ---
-        if not resultado_online:
-            try:
-                resultado_online = _buscar_yfinance(ticker.upper())
-                if resultado_online:
-                    fonte = 'yfinance'
-                    sucesso_online = True
-                else:
-                    if erro_online:
-                        erro_online += ' | yfinance: sem dados'
-                    else:
-                        erro_online = 'yfinance: dados não encontrados para este ticker'
-            except Exception as exc:
-                yf_err = f'yfinance: {str(exc)[:120]}'
-                erro_online = f'{erro_online} | {yf_err}' if erro_online else yf_err
-
-    # --- Mescla e retorno ---
-    if resultado_online and dados_json:
-        dados_finais = _mesclar_dados(resultado_online, dados_json)
-        fonte = 'misto'
-    elif resultado_online:
-        dados_finais = resultado_online.get('dados', {})
-        # Injetar num_acoes mesmo sem JSON (pode vir do yfinance)
-        if not dados_finais.get('num_acoes_milhoes_param'):
-            dados_finais['num_acoes_milhoes_param'] = dados_finais.get('num_acoes_milhoes')
-    else:
-        dados_finais = dados_json
-        fonte = 'json'
-
-    # Garantir que num_acoes_milhoes_param está sempre presente
-    if not dados_finais.get('num_acoes_milhoes_param'):
-        dados_finais['num_acoes_milhoes_param'] = empresa_config.get('num_acoes_milhoes')
+        erro_online = "Falha ao obter preço online."
 
     return {
-        'dados': dados_finais,
-        'fonte': fonte,
+        'dados': dados_json,
+        'fonte': 'json',
         'empresa_config': empresa_config,
         'sucesso_online': sucesso_online,
         'erro_online': erro_online,
@@ -658,21 +358,4 @@ def salvar_metodo_principal(ticker: str, metodo: str) -> bool:
         print(f"Erro ao salvar método principal: {e}")
         return False
 
-def buscar_historico_trimestral(ticker: str) -> dict:
-    """Busca o histórico financeiro trimestral via yfinance."""
-    import yfinance as yf
-    try:
-        tk = yf.Ticker(ticker + '.SA')
-        fin = tk.quarterly_financials
-        bs = tk.quarterly_balance_sheet
-        cf = tk.quarterly_cashflow
-        
-        return {
-            'financials': fin,
-            'balance_sheet': bs,
-            'cashflow': cf
-        }
-    except Exception as e:
-        print(f"Erro ao buscar histórico trimestral: {e}")
-        return {}
 
