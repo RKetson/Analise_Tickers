@@ -175,3 +175,5 @@ data/companies.json
 http_cache.sqlite
 test_out.txt
 data/portfolio.json
+data/global_config.json
+data/dashboard_layout.json
