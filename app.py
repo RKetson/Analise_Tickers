@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import config
 from src.data_loader import (
     carregar_dados_empresa, listar_empresas, listar_acoes, carregar_multiplos_setor,
-    obter_parametros_padrao, adicionar_empresa, salvar_dados_manuais
+    obter_parametros_padrao, adicionar_empresa, salvar_dados_manuais, salvar_premissas
 )
 from src.models import calcular_todos
 from src.analysis import gerar_relatorio_completo
@@ -639,8 +639,9 @@ def page_valuation():
                     "Ajuste as premissas de projeção de cada método. Dados fundamentalistas puros (LPA, VPA, FCL) "
                     "devem ser editados na aba 'Entrada Manual'.</div>", unsafe_allow_html=True)
 
-        # Carrega parâmetros costumizados em sessão, se houver
-        custom_p = st.session_state.get('custom_params_session', {}).get(ticker, {})
+        # Carrega parâmetros customizados em sessão e base local, se houver
+        custom_p = dict(emp_cfg.get('premissas_valuation', {}))
+        custom_p.update(st.session_state.get('custom_params_session', {}).get(ticker, {}))
         
         selic = st.session_state.get('selic', config.SELIC_ANUAL)
         premio = config.PREMIO_RISCO_SETOR.get(setor, 0.05)
@@ -735,12 +736,12 @@ def page_valuation():
                 payout_buffett = st.number_input('Payout Projetado (%)',
                     value=float(payout_inicial * 100), step=1.0) / 100
                     
-                pl_setor_default = config.MULTIPLO_PL_SETOR.get(setor, config.BUFFETT_PL_MAXIMO)
+                pl_setor_default = float(config.MULTIPLO_PL_SETOR.get(setor, config.BUFFETT_PL_MAXIMO))
                 pl_inicial = custom_p.get('pl_buffett', pl_setor_default)
                 pl_buffett = st.number_input('P/L Projetado Saída',
                     value=float(pl_inicial), step=0.5)
                     
-                roe_buffett_default = min(2.0, max(0.0, float(dados_orig.get('roe') or 0.15)))
+                roe_buffett_default = float(dados_orig.get('roe') or 0.15)
                 roe_inicial = custom_p.get('roe_buffett', roe_buffett_default)
                 roe_buffett = st.number_input('ROE Projetado (%)',
                     value=roe_inicial * 100, step=0.5) / 100
@@ -768,7 +769,7 @@ def page_valuation():
         with calc_col:
             calcular = st.button('🧮 Calcular Valuation', use_container_width=True)
         with save_col:
-            salvar = st.button('💾 Salvar Parâmetros Customizados', use_container_width=True, help="Salva estas premissas para a empresa na sessão.")
+            salvar = st.button('💾 Salvar Parâmetros Customizados', use_container_width=True, help="Salva as suas premissas de forma permanente para esta empresa no banco de dados.")
 
         if calcular or salvar or True:  # sempre calcular para manter estado
             # Preenche dados calc puramente com a origem
@@ -777,9 +778,6 @@ def page_valuation():
             
             preco_atual = float(dados_orig.get('preco_atual') or 0.0)
             
-            if salvar:
-                st.success('✅ Parâmetros de valuation atualizados na sessão!')
-
             params_calc = {
                 'wacc': wacc_fcd, 'taxa_bazin': taxa_bazin, 
                 'pct_aumento_lucro': pct_aumento, 'lucro_ano1_milhoes': lucro_ano1_ui, 'payout_fcd': payout_fcd_ui, 'roe_implicito': roe_fcd_ui,
@@ -793,6 +791,10 @@ def page_valuation():
                 'roe_buffett': roe_buffett,
             }
             
+            if salvar:
+                salvar_premissas(ticker, params_calc)
+                st.success('✅ Parâmetros de valuation salvos na base de dados com sucesso!')
+
             # Salva na sessão para priorizar a edição do usuário ao mudar de página
             if 'custom_params_session' not in st.session_state:
                 st.session_state['custom_params_session'] = {}

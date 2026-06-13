@@ -201,6 +201,28 @@ def salvar_dados_manuais(ticker: str, novos_dados: dict) -> bool:
         print(f"Erro ao salvar dados manuais: {e}")
         return False
 
+def salvar_premissas(ticker: str, premissas: dict) -> bool:
+    """Salva premissas de valuation permanentemente no banco local."""
+    base = carregar_base_json()
+    if ticker.upper() not in base:
+        return False
+    
+    empresa = base[ticker.upper()]
+    if 'premissas_valuation' not in empresa:
+        empresa['premissas_valuation'] = {}
+        
+    for k, v in premissas.items():
+        empresa['premissas_valuation'][k] = v
+        
+    path = os.path.join(DATA_DIR, 'companies.json')
+    try:
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(base, f, ensure_ascii=False, indent=2)
+        return True
+    except Exception as e:
+        print(f"Erro ao salvar premissas: {e}")
+        return False
+
 
 # ---------------------------------------------------------------------------
 # Camada Online: Apenas Preço
