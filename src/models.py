@@ -288,52 +288,50 @@ def calcular_gordon(
 # ---------------------------------------------------------------------------
 
 def calcular_fcd(
-    fcl_base_milhoes: float,
+    lucro_ano1_milhoes: float,
     num_acoes_milhoes: float,
     wacc: float,
-    g_crescimento_fase1: float,
+    roe: float,
+    payout: float,
     anos_fase1: int,
     g_terminal: float = config.G_TERMINAL_PADRAO,
-    divida_liquida_milhoes: float = 0.0,
 ) -> dict:
     """
-    Fluxo de Caixa Descontado (DCF) em dois estágios.
+    Fluxo de Caixa Descontado (DCF) focado em Lucros (FCFE), ideal para o Setor Financeiro.
 
     Estrutura:
-        Fase 1: FCL cresce a 'g_crescimento_fase1' por 'anos_fase1' anos.
-                Cada fluxo é trazido a VP pela WACC.
-        Valor Terminal: FCL do último ano cresce à perpetuidade por 'g_terminal'
+        Fase 1: Lucro Líquido cresce à taxa sustentável 'g = (1 - payout) * ROE' por 'anos_fase1' anos.
+                Cada lucro é trazido a VP pela WACC.
+        Valor Terminal: Lucro do último ano cresce à perpetuidade por 'g_terminal'
                         (modelo de Gordon), descontado ao presente.
 
-        EV  = VP(FCLs fase 1) + VP(Valor Terminal)
-        PJ  = (EV − Dívida Líquida) / Número de Ações
+        Equity  = VP(Lucros fase 1) + VP(Valor Terminal)
+        PJ      = Equity / Número de Ações
 
     Args:
-        fcl_base_milhoes: FCL do último exercício em R$ milhões. Deve ser > 0.
+        lucro_ano1_milhoes: Lucro Líquido Projetado para o Ano 1 em R$ milhões.
         num_acoes_milhoes: Número total de ações em milhões.
-        wacc: Custo médio ponderado de capital (ex: 0.18 = 18%).
-        g_crescimento_fase1: Crescimento anual do FCL na fase 1.
+        wacc: Taxa de desconto.
+        roe: Retorno sobre o Patrimônio Líquido (para calcular crescimento).
+        payout: Taxa de distribuição de dividendos (para calcular crescimento).
         anos_fase1: Duração da fase de crescimento em anos.
         g_terminal: Crescimento na perpetuidade (padrão = IPCA projetado).
-        divida_liquida_milhoes: Dívida líquida em R$ milhões (subtrai do EV).
 
     Returns:
         dict padrão com 'preco_justo', 'valido', 'erro', 'detalhes'.
-        'detalhes' inclui tabela de FCLs projetados por ano.
     """
     try:
-        if fcl_base_milhoes is None or num_acoes_milhoes is None:
-            return _resultado_erro('FCL ou número de ações não informado.')
+        if lucro_ano1_milhoes is None or num_acoes_milhoes is None:
+            return _resultado_erro('Lucro projetado do Ano 1 ou número de ações não informado.')
 
-        fcl = float(fcl_base_milhoes)
+        lucro_ano1 = float(lucro_ano1_milhoes)
         n_acoes = float(num_acoes_milhoes)
-        divida = float(divida_liquida_milhoes) if divida_liquida_milhoes is not None else 0.0
 
-        if fcl <= 0:
+        if lucro_ano1 <= 0:
             return _resultado_aviso(
-                f'Empresa com FCL negativo (R$ {fcl:.0f} mi). '
-                'O método de fluxo de caixa descontado não é aplicável a empresas que estão queimando caixa.',
-                {'fcl_base': fcl},
+                f'Empresa com Lucro Projetado negativo ou nulo (R$ {lucro_ano1:.0f} mi). '
+                'O método de fluxo de caixa descontado não é aplicável a projeções de prejuízo.',
+                {'lucro_ano1': lucro_ano1},
             )
 
         if n_acoes <= 0:
@@ -346,32 +344,31 @@ def calcular_fcd(
                 {'wacc': wacc, 'g_terminal': g_terminal},
             )
 
-        # --- Fase 1: desconto dos FCLs ---
-        fcls_projetados = []
-        fcl_ano = fcl
+        # Cálculo do Crescimento Sustentável
+        g_sustentavel = (1.0 - payout) * roe
+
+        # --- Fase 1: desconto dos Lucros ---
+        lucros_projetados = []
+        lucro_t = lucro_ano1
         soma_vp_fase1 = 0.0
 
         for t in range(1, int(anos_fase1) + 1):
-            fcl_ano = fcl_ano * (1.0 + g_crescimento_fase1)
-            vp = fcl_ano / (1.0 + wacc) ** t
+            if t > 1:
+                lucro_t = lucro_t * (1.0 + g_sustentavel)
+            vp = lucro_t / (1.0 + wacc) ** t
             soma_vp_fase1 += vp
-            fcls_projetados.append({
+            lucros_projetados.append({
                 'ano': t,
-                'fcl_milhoes': round(fcl_ano, 2),
+                'lucro_milhoes': round(lucro_t, 2),
                 'vp_milhoes': round(vp, 2),
             })
 
         # --- Valor Terminal (Gordon no último ano projetado) ---
-        fcl_terminal = fcl_ano * (1.0 + g_terminal)
-        valor_terminal = fcl_terminal / (wacc - g_terminal)
+        lucro_terminal = lucro_t * (1.0 + g_terminal)
+        valor_terminal = lucro_terminal / (wacc - g_terminal)
         vp_terminal = valor_terminal / (1.0 + wacc) ** int(anos_fase1)
 
         # --- Equity (Valor Justo) ---
-        # ATENÇÃO FINANCEIRA: O FCL utilizado no sistema (FCO - CAPEX) parte do
-        # Lucro Líquido, ou seja, as despesas financeiras JÁ FORAM PAGAS.
-        # Trata-se do Fluxo de Caixa do Acionista (FCFE).
-        # Logo, o Valor Presente destes fluxos JÁ É O VALOR DO EQUITY.
-        # Subtrair a Dívida Líquida novamente configuraria dupla penalização.
         equity = soma_vp_fase1 + vp_terminal
 
         if equity <= 0:
@@ -387,22 +384,24 @@ def calcular_fcd(
         return _resultado_ok(
             preco_justo,
             {
-                'fcl_base_milhoes': fcl,
+                'lucro_ano1_milhoes': lucro_ano1,
                 'wacc': wacc,
-                'g_fase1': g_crescimento_fase1,
+                'g_fase1': g_sustentavel,
                 'anos_fase1': anos_fase1,
                 'g_terminal': g_terminal,
-                'fcls_projetados': fcls_projetados,
+                'lucros_projetados': lucros_projetados,
                 'soma_vp_fase1_milhoes': round(soma_vp_fase1, 2),
-                'fcl_terminal_milhoes': round(fcl_terminal, 2),
+                'lucro_terminal_milhoes': round(lucro_terminal, 2),
                 'valor_terminal_milhoes': round(valor_terminal, 2),
                 'num_acoes_milhoes': n_acoes,
                 'formula': (
                     fr'\begin{{aligned}} '
+                    fr'& \text{{0. Taxa de Crescimento (g):}} \\[6pt] '
+                    fr'& g = (1 - \text{{Payout}}) \times \text{{ROE}} = (1 - {payout:.2f}) \times {roe:.4f} = {g_sustentavel:.4f} \text{{ (}}{(g_sustentavel*100):.2f}\text{{%)}} \\[12pt] '
                     fr'& \text{{1. Valor Presente da Fase de Crescimento (1 a {int(anos_fase1)} anos):}} \\[6pt] '
-                    fr'& VP(\text{{Fase 1}}) = \sum \frac{{FCL_t}}{{(1 + WACC)^t}} = {soma_vp_fase1:.2f} \text{{ mi}} \\[12pt] '
+                    fr'& VP(\text{{Fase 1}}) = \sum_{{t=1}}^{{{int(anos_fase1)}}} \frac{{\text{{Lucro}}_t}}{{(1 + WACC)^t}} = {soma_vp_fase1:.2f} \text{{ mi}} \\[12pt] '
                     fr'& \text{{2. Valor Terminal (Perpetuidade):}} \\[6pt] '
-                    fr'& VT = \frac{{FCL_{{último}} \times (1 + g_{{term}})}}{{WACC - g_{{term}}}} = {valor_terminal:.2f} \text{{ mi}} \\[8pt] '
+                    fr'& VT = \frac{{\text{{Lucro}}_{{{int(anos_fase1)}}} \times (1 + g_{{term}})}}{{WACC - g_{{term}}}} = {valor_terminal:.2f} \text{{ mi}} \\[8pt] '
                     fr'& VP(VT) = \frac{{{valor_terminal:.2f}}}{{(1 + {wacc:.4f})^{{{int(anos_fase1)}}}}} = {vp_terminal:.2f} \text{{ mi}} \\[12pt] '
                     fr'& \text{{3. Valor por Ação:}} \\[6pt] '
                     fr'& \text{{Equity}} = VP(\text{{Fase 1}}) + VP(VT) = {equity:.2f} \text{{ mi}} \\[8pt] '
@@ -658,13 +657,13 @@ def calcular_todos(empresa_dados: dict, parametros: dict) -> dict:
 
     # --- FCD ---
     resultados['fcd'] = calcular_fcd(
-        fcl_base_milhoes=d.get('fcl_milhoes'),
+        lucro_ano1_milhoes=p.get('lucro_ano1_milhoes', d.get('lucro_liquido_milhoes')),
         num_acoes_milhoes=d.get('num_acoes_milhoes_param'),
         wacc=wacc_padrao,
-        g_crescimento_fase1=p.get('g_fcd', d.get('crescimento_lucro_5a', 0.06)),
+        roe=p.get('roe_implicito', d.get('roe', 0.10)),
+        payout=p.get('payout_fcd', 0.50),
         anos_fase1=p.get('anos_projecao', config.ANOS_PROJECAO_FCD),
         g_terminal=p.get('g_terminal', config.G_TERMINAL_PADRAO),
-        divida_liquida_milhoes=d.get('divida_liquida_milhoes', 0.0),
     )
 
     # --- EV/EBITDA ---

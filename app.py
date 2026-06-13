@@ -226,7 +226,6 @@ def build_params(ticker: str, setor: str, dados: dict, overrides: dict = None) -
 
     params = {
         'wacc': round(wacc, 4),
-        'g_fcd': min(float(dados.get('crescimento_lucro_5a') or 0.06), 0.20),
         'g_gordon': min(float(dados.get('crescimento_dpa_5a') or 0.06), 0.20),
         'k_gordon': round(wacc, 4),
         'taxa_bazin': st.session_state.get('taxa_bazin', config.DY_MINIMO_BAZIN),
@@ -600,7 +599,7 @@ def page_valuation():
         load_btn = st.button('🔄 Buscar Online', use_container_width=True)
 
     with st.spinner(f'Carregando dados de {ticker}...'):
-        result = carregar_dados_empresa(ticker)
+        result = carregar_dados_empresa(ticker, forcar_online=load_btn)
 
     dados_orig  = result['dados']
     emp_cfg     = result['empresa_config']
@@ -666,19 +665,34 @@ def page_valuation():
                 
         with c2:
             with st.container(border=True):
-                st.markdown("##### 📍 Método FCD")
+                st.markdown("##### 📍 Método FCD (Lucros)")
                 wacc_fcd = st.number_input('WACC / Custo de Capital (%)',
                     value=round(wacc_inicial * 100, 1), min_value=5.0, max_value=40.0, step=0.5, key="wacc_fcd",
                     help=f'Usado para descontar fluxos futuros. Padrão Setor {setor}: {wacc_default:.1%}.') / 100
                     
-                g_fcd_inicial = custom_p.get('g_fcd', min(float(dados_orig.get('crescimento_lucro_5a') or 0.06), 0.20))
-                g_fcd_ui = st.number_input('Cresc. FCL Fase 1 (%)',
-                    value=float(g_fcd_inicial * 100), min_value=-10.0, max_value=25.0, step=0.5,
-                    help='Taxa de crescimento do FCL na fase de projeção.') / 100
+                lucro_base = float(dados_orig.get('lucro_liquido_milhoes') or 0.0)
+
+                pct_aumento = st.number_input('Aumento Projetado Lucro Ano 1 (%)',
+                    value=float(custom_p.get('pct_aumento_lucro', 0.0)), step=1.0,
+                    help='Percentual de aumento sobre o lucro líquido atual para projetar o Ano 1.')
+
+                lucro_ano1_ui = lucro_base * (1 + pct_aumento / 100)
+                st.markdown(f"<div style='font-size:0.85rem; color:#8b949e'>Lucro Projetado (Ano 1): <b>R$ {lucro_ano1_ui:.2f} mi</b></div>", unsafe_allow_html=True)
+                
+                payout_fcd_ui = st.number_input('Payout Projetado (Fase 1) (%)',
+                    value=float(custom_p.get('payout_fcd', 0.50)) * 100, min_value=0.0, max_value=100.0, step=1.0,
+                    help='Usado para calcular a taxa de retenção e o crescimento (g).') / 100
+                
+                roe_implicito = float(dados_orig.get('roe') or 0.15)
+                roe_fcd_ui = st.number_input('ROE Projetado (Fase 1) (%)',
+                    value=float(custom_p.get('roe_implicito', roe_implicito)) * 100, min_value=0.0, step=1.0,
+                    help='Usado junto com o Payout para projetar o crescimento sustentável (g).') / 100
                     
                 anos_inicial = custom_p.get('anos_projecao', int(st.session_state.get('anos_projecao', 10)))
                 anos_proj = st.number_input('Anos de Projeção',
                     value=int(anos_inicial), min_value=5, max_value=15, step=1)
+                
+                st.markdown(f"<div style='font-size:0.8rem; color:#8b949e'>g (Fase 1) implícito: <b>{((1-payout_fcd_ui)*roe_fcd_ui*100):.1f}%</b> a.a.</div>", unsafe_allow_html=True)
                 
             with st.container(border=True):
                 st.markdown("##### 📍 Método Gordon")
@@ -759,7 +773,8 @@ def page_valuation():
 
             g_terminal = st.session_state.get('ipca', config.G_TERMINAL_PADRAO)
             params_calc = {
-                'wacc': wacc_fcd, 'taxa_bazin': taxa_bazin, 'g_fcd': g_fcd_ui,
+                'wacc': wacc_fcd, 'taxa_bazin': taxa_bazin, 
+                'pct_aumento_lucro': pct_aumento, 'lucro_ano1_milhoes': lucro_ano1_ui, 'payout_fcd': payout_fcd_ui, 'roe_implicito': roe_fcd_ui,
                 'g_gordon': g_gordon, 'k_gordon': wacc_gordon, 'g_terminal': g_terminal,
                 'anos_projecao': int(anos_proj),
                 'multiplo_ev_ebitda': multiplo_ev,
@@ -1239,29 +1254,36 @@ def page_manual():
                       '**Importância:** Converte o valor da empresa (equity) em valor por ação.\n\n'
                       '**Como encontrar:** RI da empresa → Dados de Mercado, ou calcule: PL ÷ VPA.'))
 
-        st.markdown("<div class='sec-hdr'>📊 Indicadores de Lucro e Patrimônio</div>", unsafe_allow_html=True)
-        l1, l2, l3 = st.columns(3)
-        with l1:
-            m_lpa = st.number_input('📊 LPA — Lucro por Ação (R$)',
-                value=float(dados.get('lpa') or 0), step=0.01,
-                help=('**O que é:** Lucro Líquido ÷ Número de Ações em circulação.\n\n'
-                      '**Importância:** Fundamento do método Graham (junto com VPA).\n\n'
-                      '**Como calcular:** Lucro Líquido (DRE) ÷ Total de Ações. Disponível no fundamentus.com.br.\n\n'
-                      '⚠️ **Atenção:** Use LPA normalizado (últimos 12 meses). EXCLUA eventos não-recorrentes '
-                      '(provisões, ganhos de arbitragem, variação cambial sobre dívida).'))
-        with l2:
-            m_vpa = st.number_input('🏦 VPA — Valor Patrimonial por Ação (R$)',
-                value=float(dados.get('vpa') or 0), min_value=0.0, step=0.01,
-                help=('**O que é:** Patrimônio Líquido Total ÷ Número de Ações.\n\n'
-                      '**Importância:** Fundamento do método Graham. Representa o valor contábil por ação.\n\n'
-                      '**Como calcular:** PL (Balanço Patrimonial) ÷ Nº Ações. Encontre no RI ou CVM.'))
-        with l3:
-            m_roe = st.number_input('📈 ROE Atual (%) 🤖',
-                value=float((dados.get('roe') or 0) * 100), min_value=0.0, max_value=200.0, step=0.1,
-                help=('**O que é:** Retorno sobre Patrimônio Líquido = Lucro Líquido ÷ PL.\n\n'
-                      '**Importância:** Mede eficiência da empresa. ROE > 15% = excelente, '
-                      '< 10% = preocupante.\n\n'
-                      '**Como encontrar:** fundamentus.com.br → coluna ROE, ou calcule manualmente.')) / 100
+        st.markdown("<div class='sec-hdr'>🏗️ Balanço & Resultados (Milhões R$)</div>", unsafe_allow_html=True)
+        b1, b2, b3 = st.columns(3)
+        with b1:
+            m_lucro = st.number_input('📈 Lucro Líquido (R$ mi)',
+                value=float(dados.get('lucro_liquido_milhoes') or 0), step=100.0,
+                help='Lucro líquido dos últimos 12 meses. Base principal para o Valuation FCD de bancos.')
+            m_receita = st.number_input('📊 Receita Líquida (R$ mi)',
+                value=float(dados.get('receita_liquida_milhoes') or 0), min_value=0.0, step=100.0)
+        with b2:
+            m_pl = st.number_input('🏦 Patrimônio Líquido (R$ mi)',
+                value=float(dados.get('patrimonio_liquido_milhoes') or 0), min_value=0.0, step=100.0,
+                help='Ativos − Passivos. Base para o cálculo automático do VPA e do ROE.')
+            m_ebitda = st.number_input('💹 EBITDA (R$ mi)',
+                value=float(dados.get('ebitda_milhoes') or 0), min_value=0.0, step=10.0)
+        with b3:
+            m_divida = st.number_input('🏋️ Dívida Líquida (R$ mi)',
+                value=float(dados.get('divida_liquida_milhoes') or 0), step=100.0,
+                help='Dívida Bruta Total − Caixa e Equivalentes. Usado apenas no EV/EBITDA.')
+
+        st.markdown("<div class='sec-hdr'>🤖 Indicadores Derivados Automaticamente</div>", unsafe_allow_html=True)
+        st.markdown("<div style='font-size:0.85rem; color:#8b949e; margin-bottom:15px'>Estes campos são calculados automaticamente em tempo real a partir do Lucro, Patrimônio Líquido e Nº de Ações que você informou acima.</div>", unsafe_allow_html=True)
+        
+        calc_lpa = m_lucro / m_num_acoes if m_num_acoes > 0 else 0
+        calc_vpa = m_pl / m_num_acoes if m_num_acoes > 0 else 0
+        calc_roe = m_lucro / m_pl if m_pl > 0 else 0
+        
+        d1, d2, d3 = st.columns(3)
+        d1.metric("LPA (Implícito)", f"R$ {calc_lpa:.2f}")
+        d2.metric("VPA (Implícito)", f"R$ {calc_vpa:.2f}")
+        d3.metric("ROE (Implícito)", f"{calc_roe*100:.1f}%")
 
         st.markdown("<div class='sec-hdr'>💰 Dividendos por Ação (DPA)</div>", unsafe_allow_html=True)
         st.markdown("<div style='color:#8b949e;font-size:.8rem;margin-bottom:10px'>"
@@ -1282,62 +1304,11 @@ def page_manual():
             md3 = st.number_input('DPA Último Ano (R$)', value=float(dpa_h[2]), min_value=0.0, step=0.01,
                                    help='DPA do exercício mais recente.')
 
-        st.markdown("<div class='sec-hdr'>🏗️ Balanço & Fluxo de Caixa</div>", unsafe_allow_html=True)
-        b1, b2, b3 = st.columns(3)
-        with b1:
-            m_ebitda = st.number_input('💹 EBITDA (R$ milhões) 🕒',
-                value=float(dados.get('ebitda_milhoes') or 0), min_value=0.0, step=10.0,
-                help=('**O que é:** Lucro antes de Juros, Impostos, Depreciação e Amortização. '
-                      'Proxy do caixa operacional bruto.\n\n'
-                      '**Importância:** Base do EV/EBITDA e do índice D/EBITDA (endividamento).\n\n'
-                      '**Como encontrar:** DRE + Notas Explicativas (RI ou CVM).\n\n'
-                      '⚠️ **Atenção:** AJUSTE por itens não-recorrentes. Use EBITDA ajustado da empresa '
-                      'quando disponível.'))
-            m_fcl = st.number_input('💰 FCL — Fluxo Caixa Livre (R$ mi) 🕒',
-                value=float(dados.get('fcl_milhoes') or 0), step=10.0,
-                help=('**O que é:** FCO (Fluxo de Caixa Operacional) − CAPEX.\n\n'
-                      '**Importância:** Fundamento do FCD. FCL < 0 → FCD não aplicável.\n\n'
-                      '**Como calcular:** Na DFC: FCO (atividades operacionais) − CAPEX (atividades de investimento).\n\n'
-                      '⚠️ **Atenção:** EXCLUA variações não-recorrentes de capital de giro. '
-                      'FCL pode ser negativo em anos de forte investimento (ex: Klabin com Puma II).'))
-        with b2:
-            m_divida = st.number_input('🏋️ Dívida Líquida (R$ milhões) 🕒',
-                value=float(dados.get('divida_liquida_milhoes') or 0), step=100.0,
-                help=('**O que é:** Dívida Bruta Total − Caixa e Equivalentes.\n\n'
-                      '**Importância:** D/EBITDA > 3x = sinal de alerta conservador. '
-                      'Desconta do EV no FCD e EV/EBITDA.\n\n'
-                      '**Como encontrar:** Balanço Patrimonial → Passivo (Empréstimos e Financiamentos) '
-                      '− Ativo (Caixa). Notas Explicativas dão o detalhe.\n\n'
-                      '⚠️ **Bancos/Seguradoras:** Não usar D/EBITDA. Usar Índice de Basileia.'))
-            m_capex = st.number_input('🏗️ CAPEX (R$ milhões) 🕒 🤖',
-                value=float(dados.get('capex_milhoes') or 0), min_value=0.0, step=10.0,
-                help=('**O que é:** Capital Expenditure — investimentos em ativos fixos (imobilizado, intangível).\n\n'
-                      '**Importância:** CAPEX/EBITDA > 70% = empresa intensiva em capital → FCL comprimido.\n\n'
-                      '**Como encontrar:** DFC (atividades de investimento) → '
-                      '"Aquisição de imobilizado" ou "Adições ao ativo imobilizado". '
-                      'Nota: sai negativo na DFC.'))
-        with b3:
-            m_pl = st.number_input('🏦 Patrimônio Líquido (R$ mi) 🤖',
-                value=float(dados.get('patrimonio_liquido_milhoes') or 0), min_value=0.0, step=100.0,
-                help=('**O que é:** Ativos − Passivos. Capital dos acionistas.\n\n'
-                      '**Importância:** Base de cálculo do VPA e ROE.\n\n'
-                      '**Como encontrar:** Balanço Patrimonial → Patrimônio Líquido total (RI ou CVM).'))
-            m_receita = st.number_input('📊 Receita Líquida (R$ mi) 🕒 🤖',
-                value=float(dados.get('receita_liquida_milhoes') or 0), min_value=0.0, step=100.0,
-                help=('**O que é:** Receita total − deduções (impostos sobre vendas, devoluções).\n\n'
-                      '**Como encontrar:** DRE → primeira linha após deduções (RI ou CVM).'))
+
 
         st.markdown("<div class='sec-hdr'>📈 Crescimentos Históricos (CAGR 5 anos)</div>", unsafe_allow_html=True)
         cr1, cr2 = st.columns(2)
         with cr1:
-            m_g_lucro = st.number_input('📊 Crescimento LPA/Lucro — 5a (%)',
-                value=float((dados.get('crescimento_lucro_5a') or 0.06) * 100),
-                min_value=-50.0, max_value=50.0, step=0.5,
-                help=('**O que é:** CAGR do LPA nos últimos 5 anos.\n\n'
-                      '**Importância:** Taxa g usada na Fase 1 do FCD como premissa de crescimento.\n\n'
-                      '**Como calcular:** (LPA_atual ÷ LPA_5anos_atrás)^(1/5) − 1.\n\n'
-                      '⚠️ Crescimento passado NÃO garante o futuro. Use com conservadorismo.')) / 100
-        with cr2:
             m_g_dpa = st.number_input('💰 Crescimento DPA — 5a (%)',
                 value=float((dados.get('crescimento_dpa_5a') or 0.06) * 100),
                 min_value=-50.0, max_value=50.0, step=0.5,
@@ -1360,38 +1331,40 @@ def page_manual():
         from src.data_loader import salvar_dados_manuais
         dpa_lista = [x for x in [md1, md2, md3] if x > 0]
         dados_manual = {
-            'preco_atual': m_preco, 'lpa': m_lpa, 'vpa': m_vpa, 'roe': m_roe,
-            'ebitda_milhoes': m_ebitda, 'fcl_milhoes': m_fcl,
-            'divida_liquida_milhoes': m_divida, 'capex_milhoes': m_capex,
+            'preco_atual': m_preco, 'lpa': calc_lpa, 'vpa': calc_vpa, 'roe': calc_roe,
+            'ebitda_milhoes': m_ebitda,
+            'divida_liquida_milhoes': m_divida,
+            'lucro_liquido_milhoes': m_lucro,
             'patrimonio_liquido_milhoes': m_pl, 'receita_liquida_milhoes': m_receita,
             'num_acoes_milhoes_param': m_num_acoes, 'dpa_historico': dpa_lista,
-            'crescimento_lucro_5a': m_g_lucro, 'crescimento_dpa_5a': m_g_dpa,
+            'crescimento_dpa_5a': m_g_dpa,
             'wacc': m_wacc,
         }
         st.session_state['manual_dados'][ticker] = dados_manual
         
-        if salvar_dados_manuais(ticker, dados_manual):
-            st.success('✅ Dados salvos com sucesso na base local! Redirecionando...')
+        sucesso = salvar_dados_manuais(ticker, dados_manual)
+        
+        if sucesso:
             st.session_state['valuation_ticker'] = ticker
-            st.session_state['page'] = 'valuation'
+            st.session_state['_calc_dados'] = dados_manual
+            setor = cfg.get('setor', '')
+            params_m = build_params(ticker, setor, dados_manual,
+                                    {'multiplo_ev_ebitda': carregar_multiplos_setor().get(setor, {}).get('ev_ebitda')})
+            st.session_state['_calc_params'] = params_m
+            st.session_state['_calc_result'] = calcular_todos(dados_manual, params_m)
+            st.session_state['_calc_ticker'] = ticker
+            st.session_state['_calc_preco'] = m_preco
+            st.session_state['_calc_metodos_sel'] = {k: True for k in METODO_INFO}
+            st.session_state['_emp_cfg'] = cfg
             st.cache_data.clear()
+
+            st.success('✅ Dados salvos com sucesso na base local! Redirecionando...')
+            import time
+            time.sleep(1.0)
+            st.session_state['page'] = 'valuation'
             st.rerun()
         else:
             st.error('❌ Erro ao salvar os dados.')
-        st.session_state['valuation_ticker'] = ticker
-        st.session_state['_calc_dados'] = dados_manual
-        setor = cfg.get('setor', '')
-        params_m = build_params(ticker, setor, dados_manual,
-                                {'multiplo_ev_ebitda': carregar_multiplos_setor().get(setor, {}).get('ev_ebitda')})
-        st.session_state['_calc_params'] = params_m
-        st.session_state['_calc_result'] = calcular_todos(dados_manual, params_m)
-        st.session_state['_calc_ticker'] = ticker
-        st.session_state['_calc_preco'] = m_preco
-        st.session_state['_calc_metodos_sel'] = {k: True for k in METODO_INFO}
-        st.session_state['_emp_cfg'] = cfg
-        st.success(f'✅ Dados de {ticker} salvos! Redirecionando para Valuation...')
-        st.session_state['page'] = 'valuation'
-        st.rerun()
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PAGE: CONFIGURAÇÕES
@@ -1483,6 +1456,8 @@ def page_config():
         st.session_state['premio_risco_custom'] = novos_premios
         st.cache_data.clear()
         st.success('✅ Configurações salvas! Valuations recalculados com os novos parâmetros.')
+        import time
+        time.sleep(1.0)
         st.rerun()
 
     if resetar:
@@ -1492,6 +1467,8 @@ def page_config():
                 del st.session_state[k]
         st.cache_data.clear()
         st.success('✅ Configurações resetadas para os valores padrão.')
+        import time
+        time.sleep(1.0)
         st.rerun()
 
     # Tabela resumo das configurações atuais

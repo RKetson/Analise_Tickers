@@ -189,6 +189,7 @@ def salvar_dados_manuais(ticker: str, novos_dados: dict) -> bool:
         elif k == 'wacc':
             empresa['wacc'] = v
 
+    empresa['dados_manuais_ativos'] = True
     empresa['data_referencia'] = datetime.now().strftime('%Y-%m-%d')
     
     path = os.path.join(DATA_DIR, 'companies.json')
@@ -498,30 +499,44 @@ def carregar_dados_empresa(ticker: str, forcar_online: bool = False) -> dict:
     erro_online: str | None = None
     sucesso_online = False
 
-    # --- Camada 1: fundamentus ---
-    try:
-        resultado_online = _buscar_fundamentus(ticker.upper())
-        if resultado_online:
-            fonte = 'fundamentus'
-            sucesso_online = True
-    except Exception as exc:
-        erro_online = f'fundamentus: {str(exc)[:120]}'
+    if empresa_config.get('dados_manuais_ativos') and not forcar_online:
+        # Usuário preencheu manualmente. Pular busca online para não sobrescrever.
+        pass
+    else:
+        if forcar_online and empresa_config.get('dados_manuais_ativos'):
+            empresa_config['dados_manuais_ativos'] = False
+            base[ticker.upper()]['dados_manuais_ativos'] = False
+            path = os.path.join(DATA_DIR, 'companies.json')
+            try:
+                with open(path, 'w', encoding='utf-8') as f:
+                    json.dump(base, f, ensure_ascii=False, indent=2)
+            except Exception:
+                pass
 
-    # --- Camada 2: yfinance (fallback) ---
-    if not resultado_online:
+        # --- Camada 1: fundamentus ---
         try:
-            resultado_online = _buscar_yfinance(ticker.upper())
+            resultado_online = _buscar_fundamentus(ticker.upper())
             if resultado_online:
-                fonte = 'yfinance'
+                fonte = 'fundamentus'
                 sucesso_online = True
-            else:
-                if erro_online:
-                    erro_online += ' | yfinance: sem dados'
-                else:
-                    erro_online = 'yfinance: dados não encontrados para este ticker'
         except Exception as exc:
-            yf_err = f'yfinance: {str(exc)[:120]}'
-            erro_online = f'{erro_online} | {yf_err}' if erro_online else yf_err
+            erro_online = f'fundamentus: {str(exc)[:120]}'
+
+        # --- Camada 2: yfinance (fallback) ---
+        if not resultado_online:
+            try:
+                resultado_online = _buscar_yfinance(ticker.upper())
+                if resultado_online:
+                    fonte = 'yfinance'
+                    sucesso_online = True
+                else:
+                    if erro_online:
+                        erro_online += ' | yfinance: sem dados'
+                    else:
+                        erro_online = 'yfinance: dados não encontrados para este ticker'
+            except Exception as exc:
+                yf_err = f'yfinance: {str(exc)[:120]}'
+                erro_online = f'{erro_online} | {yf_err}' if erro_online else yf_err
 
     # --- Mescla e retorno ---
     if resultado_online and dados_json:
