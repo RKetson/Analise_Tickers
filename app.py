@@ -1190,6 +1190,22 @@ def page_comparativo():
     tickers_sel = [opcoes[s] for s in selecionadas]
     multiplos = carregar_multiplos_setor()
 
+    st.markdown("<div class='sec-hdr'>Parâmetros do Consenso</div>", unsafe_allow_html=True)
+    st.markdown("<div style='color:#8b949e;font-size:0.85rem;margin-bottom:15px'>Personalize quais métodos de valuation comporão o Preço Médio (Consenso) para cada empresa. O padrão reflete suas escolhas salvas.</div>", unsafe_allow_html=True)
+    
+    metodos_comparativo = {}
+    cols_metodos = st.columns(len(tickers_sel))
+    for i, ticker in enumerate(tickers_sel):
+        with cols_metodos[i]:
+            with st.expander(f"🛠️ Métodos {ticker}", expanded=False):
+                # Carrega as preferências salvas como padrão
+                res_tmp = carregar_dados_empresa(ticker)
+                saved_metodos = res_tmp['empresa_config'].get('premissas_valuation', {}).get('metodos_sel', {})
+                metodos_comparativo[ticker] = {}
+                for key, info in METODO_INFO.items():
+                    val = saved_metodos.get(key, True)
+                    metodos_comparativo[ticker][key] = st.checkbox(info[0], value=val, key=f"comp_chk_{key}_{ticker}")
+
     rows = []
     with st.spinner('Carregando dados...'):
         for ticker in tickers_sel:
@@ -1201,6 +1217,10 @@ def page_comparativo():
                 preco = float(dados.get('preco_atual') or 0)
                 multiplo_ev = multiplos.get(setor, {}).get('ev_ebitda')
                 params = build_params(ticker, setor, dados, {'multiplo_ev_ebitda': multiplo_ev})
+                
+                # Aplica as seleções de métodos do comparativo (sobrepõe as originais)
+                params['metodos_sel'] = metodos_comparativo[ticker]
+                
                 calc = calcular_todos(dados, params)
                 pm = calc.get('_media')
                 ms = (calcular_margem(preco, pm) or 0) * 100
@@ -1212,6 +1232,7 @@ def page_comparativo():
                     'Gordon': calc['gordon'].get('preco_justo'),
                     'FCD': calc['fcd'].get('preco_justo'),
                     'EV/EBITDA': calc['ev_ebitda'].get('preco_justo'),
+                    'Buffett': calc.get('buffett', {}).get('preco_justo'),
                     'Preço Médio': pm, 'Margem (%)': ms,
                     'ROE (%)': float((dados.get('roe') or 0) * 100),
                     'DY (%)': float((dados.get('dy') or 0) * 100),
@@ -1248,8 +1269,8 @@ def page_comparativo():
 
     # Gráfico comparativo de métodos
     st.markdown("<div class='sec-hdr'>Preço Justo por Método</div>", unsafe_allow_html=True)
-    metodos_plot = ['Graham','Bazin','Gordon','FCD','EV/EBITDA','Preço Atual']
-    cores_m = ['#00d4aa','#ffd700','#4fc3f7','#ff9f43','#a29bfe','#ff4757']
+    metodos_plot = ['Graham','Bazin','Gordon','FCD','EV/EBITDA','Buffett','Preço Atual']
+    cores_m = ['#00d4aa','#ffd700','#4fc3f7','#ff9f43','#a29bfe','#fd79a8','#ff4757']
     fig2 = go.Figure()
     for metodo, cor in zip(metodos_plot, cores_m):
         vals = [row.get(metodo) for row in rows]
