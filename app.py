@@ -26,6 +26,7 @@ from src.data_loader import (
 from src.models import calcular_todos
 from src.analysis import gerar_relatorio_completo
 from src.carteira_page import page_carteira
+from src.fii_page import page_fii
 from src.formatters import (
     formatar_moeda, formatar_percentual, formatar_multiplo,
     formatar_milhoes, calcular_margem, status_margem
@@ -375,6 +376,7 @@ def render_sidebar():
         nav = {
             '🏠 Dashboard':       'dashboard',
             '💼 Minha Carteira':  'carteira',
+            '🏘️ Análise FII':    'fii',
             '🔍 Valuation':       'valuation',
             '⚖️ Comparativo':     'comparativo',
             '📝 Entrada Manual':  'manual',
@@ -749,7 +751,7 @@ def page_valuation():
         custom_p = dict(emp_cfg.get('premissas_valuation', {}))
         custom_p.update(st.session_state.get('custom_params_session', {}).get(ticker, {}))
         
-        st.write("DEBUG custom_p (Premissas Carregadas):", custom_p)
+
         
         selic = st.session_state.get('selic', config.SELIC_ANUAL)
         premio = config.PREMIO_RISCO_SETOR.get(setor, 0.05)
@@ -1813,6 +1815,8 @@ def main():
         page_dashboard()
     elif page == 'carteira':
         page_carteira()
+    elif page == 'fii':
+        page_fii()
     elif page == 'valuation':
         page_valuation()
     elif page == 'comparativo':
