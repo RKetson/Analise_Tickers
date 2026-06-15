@@ -178,3 +178,11 @@ data/*
 http_cache.sqlite
 
 test*.*
+
+AI_CONTEXT.md
+
+# Backend — Analisador Financeiro com Pluggy
+backend/.env
+data/pluggy_db.sqlite
+data/pluggy_db.sqlite-wal
+data/pluggy_db.sqlite-shm
