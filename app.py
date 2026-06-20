@@ -377,18 +377,56 @@ def render_sidebar():
         </div>""", unsafe_allow_html=True)
 
         st.markdown("<hr style='border-color:rgba(255,255,255,0.07);margin:0 0 12px 0'>", unsafe_allow_html=True)
+        st.markdown("<div style='font-size:0.75rem;color:#8b949e;margin-bottom:8px;font-weight:600;letter-spacing:1px;text-transform:uppercase;'>Investimentos</div>", unsafe_allow_html=True)
 
-        nav = {
+        nav_investimentos = {
             '🏠 Dashboard':       'dashboard',
             '💼 Minha Carteira':  'carteira',
             '🏘️ Análise FII':    'fii',
             '🔍 Valuation':       'valuation',
             '⚖️ Comparativo':     'comparativo',
             '📝 Entrada Manual':  'manual',
+        }
+        for label, pid in nav_investimentos.items():
+            active = st.session_state.get('page') == pid
+            if st.button(label, key=f'nav_{pid}', use_container_width=True):
+                st.session_state['page'] = pid
+                st.rerun()
+            if active:
+                st.markdown(f"""<style>
+                div[data-testid="stButton"] > button[kind="secondary"]:last-of-type {{
+                    background:rgba(0,212,170,0.12) !important;
+                    border-left:3px solid #00d4aa !important;
+                    color:#00d4aa !important;
+                }}</style>""", unsafe_allow_html=True)
+
+        st.markdown("<hr style='border-color:rgba(255,255,255,0.07);margin:16px 0 12px 0'>", unsafe_allow_html=True)
+        st.markdown("<div style='font-size:0.75rem;color:#8b949e;margin-bottom:8px;font-weight:600;letter-spacing:1px;text-transform:uppercase;'>Finanças Pessoais</div>", unsafe_allow_html=True)
+
+        nav_financas = {
+            '💳 Controle de Gastos': 'gastos',
+        }
+        for label, pid in nav_financas.items():
+            active = st.session_state.get('page') == pid
+            if st.button(label, key=f'nav_{pid}', use_container_width=True):
+                st.session_state['page'] = pid
+                st.rerun()
+            if active:
+                st.markdown(f"""<style>
+                div[data-testid="stButton"] > button[kind="secondary"]:last-of-type {{
+                    background:rgba(0,212,170,0.12) !important;
+                    border-left:3px solid #00d4aa !important;
+                    color:#00d4aa !important;
+                }}</style>""", unsafe_allow_html=True)
+
+        st.markdown("<hr style='border-color:rgba(255,255,255,0.07);margin:16px 0 12px 0'>", unsafe_allow_html=True)
+        st.markdown("<div style='font-size:0.75rem;color:#8b949e;margin-bottom:8px;font-weight:600;letter-spacing:1px;text-transform:uppercase;'>Sistema</div>", unsafe_allow_html=True)
+
+        nav_sistema = {
             '⚙️ Configurações':   'config',
             '📚 Metodologia':     'metodologia',
         }
-        for label, pid in nav.items():
+        for label, pid in nav_sistema.items():
             active = st.session_state.get('page') == pid
             if st.button(label, key=f'nav_{pid}', use_container_width=True):
                 st.session_state['page'] = pid
@@ -1472,7 +1510,6 @@ def page_manual():
         submitted = st.form_submit_button('💾 Salvar e Ir para Valuation', use_container_width=True)
 
     if submitted:
-        from src.data_loader import salvar_dados_manuais
         dpa_lista = [x for x in [md1, md2, md3] if x > 0]
         dados_manual = {
             'preco_atual': m_preco, 'lpa': calc_lpa, 'vpa': calc_vpa, 'roe': calc_roe,
@@ -1519,8 +1556,12 @@ def page_config():
     st.markdown("""
     <div class='app-hdr'>
         <div class='app-title'>⚙️ Configurações</div>
-        <div class='app-sub'>Taxas macroeconômicas · Parâmetros de valuation · Múltiplos setoriais</div>
+        <div class='app-sub'>Taxas macroeconômicas · Parâmetros de valuation · Integração Pluggy</div>
     </div>""", unsafe_allow_html=True)
+    
+    from src.page_gastos import get_saved_item_ids, get_saved_filters, save_config
+    current_ids = get_saved_item_ids()
+    cur_cat, cur_desc = get_saved_filters()
 
     with st.form('form_config'):
         st.markdown("<div class='sec-hdr'>📈 Taxas Macroeconômicas</div>", unsafe_allow_html=True)
@@ -1603,6 +1644,16 @@ def page_config():
                     min_value=0.5, max_value=15.0, step=0.25, key=f'premio_{setor}',
                     help=f'Prêmio de risco adicional sobre a Selic para o setor {setor}.') / 100
                 novos_premios[setor] = v
+                
+        st.markdown("<div class='sec-hdr'>🔌 Integração Pluggy (Análise de Gastos)</div>", unsafe_allow_html=True)
+        novo_ids_raw = st.text_area("Lista de Item IDs de Conexão", value=",\n".join(current_ids), height=60, help="IDs gerados no ambiente meu.pluggy para sincronização bancária.")
+        
+        st.markdown("<div style='color:#8b949e;font-size:.82rem;margin-bottom:10px'>Filtro Anti-Distorção (Evita dupla contagem de Faturas e Transferências entre contas)</div>", unsafe_allow_html=True)
+        cf1, cf2 = st.columns(2)
+        with cf1:
+            novo_cat_raw = st.text_area("Termos bloqueados em Categorias", value=", ".join(cur_cat), height=60)
+        with cf2:
+            novo_desc_raw = st.text_area("Termos bloqueados em Descrições", value=", ".join(cur_desc), height=60)
 
         c1, c2 = st.columns(2)
         with c1:
@@ -1623,6 +1674,13 @@ def page_config():
         st.session_state['ms_boa'] = nova_ms_boa
         st.session_state['ms_justo'] = nova_ms_justo
         st.session_state['ms_cara'] = nova_ms_cara
+        
+        # Salva dados do Pluggy no .env local
+        limpos = [i.strip() for i in novo_ids_raw.replace('\n', ',').replace('\r', ',').split(',') if i.strip()]
+        novo_ids_str = ",".join(limpos)
+        cat_limpos = [i.strip() for i in novo_cat_raw.replace('\n', ',').split(',') if i.strip()]
+        desc_limpos = [i.strip() for i in novo_desc_raw.replace('\n', ',').split(',') if i.strip()]
+        save_config(novo_ids_str, ",".join(cat_limpos), ",".join(desc_limpos))
         
         from src.data_loader import salvar_config_global
         gc = {
@@ -1848,6 +1906,9 @@ def main():
         page_config()
     elif page == 'metodologia':
         page_metodologia()
+    elif page == 'gastos':
+        from src.page_gastos import render_page_gastos
+        render_page_gastos()
 
 if __name__ == '__main__':
     main()
