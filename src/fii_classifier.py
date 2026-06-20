@@ -21,12 +21,15 @@ Cache em data/fii_classificacoes.json (editável manualmente).
 """
 
 import os
-import json
+import sys
 import re
 import pandas as pd
 
 _BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_CACHE_PATH = os.path.join(_BASE_DIR, "data", "fii_classificacoes.json")
+sys.path.insert(0, _BASE_DIR)
+
+from src.database import SessionLocal
+from src.db_models import FiiClassification
 
 # ── Segmentos canônicos ───────────────────────────────────────────────────────
 SEGMENTOS = [
@@ -245,21 +248,33 @@ def _classificar_por_fundamentus(segmento_original: str) -> str | None:
 
 
 def _carregar_cache() -> dict:
-    """Carrega classificações previamente salvas."""
-    if os.path.exists(_CACHE_PATH):
-        try:
-            with open(_CACHE_PATH, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            pass
-    return {}
+    """Carrega classificações previamente salvas do banco de dados."""
+    db = SessionLocal()
+    try:
+        fiis = db.query(FiiClassification).all()
+        return {f.ticker: f.segmento for f in fiis}
+    except Exception:
+        return {}
+    finally:
+        db.close()
 
 
 def _salvar_cache(classificacoes: dict) -> None:
-    """Persiste as classificações em disco."""
-    os.makedirs(os.path.dirname(_CACHE_PATH), exist_ok=True)
-    with open(_CACHE_PATH, "w", encoding="utf-8") as f:
-        json.dump(classificacoes, f, ensure_ascii=False, indent=2, sort_keys=True)
+    """Persiste as classificações no banco de dados."""
+    db = SessionLocal()
+    try:
+        for ticker, segmento in classificacoes.items():
+            fii = db.query(FiiClassification).filter_by(ticker=ticker).first()
+            if fii:
+                fii.segmento = segmento
+            else:
+                db.add(FiiClassification(ticker=ticker, segmento=segmento))
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        print(f"Erro ao salvar classificações de FIIs: {e}")
+    finally:
+        db.close()
 
 
 def classificar_segmentos(df: pd.DataFrame) -> pd.Series:
@@ -321,9 +336,17 @@ def reclassificar_todos(df: pd.DataFrame) -> pd.Series:
     Força reclassificação de todos os tickers (ignora cache).
     Útil quando a lógica de regras foi atualizada.
     """
-    # Limpa cache do disco
-    if os.path.exists(_CACHE_PATH):
-        os.remove(_CACHE_PATH)
+    # Limpa cache do banco
+    db = SessionLocal()
+    try:
+        db.query(FiiClassification).delete()
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        print(f"Erro ao limpar cache de FIIs: {e}")
+    finally:
+        db.close()
+        
     return classificar_segmentos(df)
 
 

@@ -11,17 +11,19 @@ Funcionalidades:
 """
 
 import os
-import json
+import sys
 import io
 import streamlit as st
 import plotly.graph_objects as go
 import pandas as pd
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from src.database import SessionLocal
+from src.db_models import AppConfig
+
 from src.fii_scraper import scrape_fii_fundamentus, obter_timestamp_cache
 from src.fii_classifier import classificar_segmentos, reclassificar_todos
-
-# ── Configurações e Mapeamentos ───────────────────────────────────────────────
-_PREFS_PATH = "data/fii_layout_prefs.json"
 
 _COR_SEGMENTO = {
     "Logística":           "#00d4aa",
@@ -76,10 +78,21 @@ def _salvar_prefs():
         "fii_ord_col": st.session_state.get("fii_ord_col", ""),
         "fii_ord_asc": st.session_state.get("fii_ord_asc", True),
     }
-    os.makedirs(os.path.dirname(_PREFS_PATH), exist_ok=True)
-    with open(_PREFS_PATH, "w", encoding="utf-8") as f:
-        json.dump(prefs, f, indent=2)
-    st.toast("✅ Layout e filtros salvos com sucesso!")
+    
+    db = SessionLocal()
+    try:
+        config = db.query(AppConfig).filter_by(chave='fii_layout_prefs').first()
+        if config:
+            config.valor = prefs
+        else:
+            db.add(AppConfig(chave='fii_layout_prefs', valor=prefs))
+        db.commit()
+        st.toast("✅ Layout e filtros salvos com sucesso!")
+    except Exception as e:
+        db.rollback()
+        st.error(f"Erro ao salvar layout: {e}")
+    finally:
+        db.close()
 
 def _carregar_prefs_iniciais(segmentos_disp, colunas_disp):
     if "fii_prefs_loaded" in st.session_state:
@@ -100,11 +113,11 @@ def _carregar_prefs_iniciais(segmentos_disp, colunas_disp):
         "fii_ord_asc": True,
     }
     
-    if os.path.exists(_PREFS_PATH):
-        try:
-            with open(_PREFS_PATH, "r", encoding="utf-8") as f:
-                prefs = json.load(f)
-            
+    db = SessionLocal()
+    try:
+        config = db.query(AppConfig).filter_by(chave='fii_layout_prefs').first()
+        if config and config.valor:
+            prefs = config.valor
             if "fii_seg" in prefs:
                 val = [s for s in prefs["fii_seg"] if s in segmentos_disp]
                 if val: padroes["fii_seg"] = val
@@ -121,8 +134,10 @@ def _carregar_prefs_iniciais(segmentos_disp, colunas_disp):
             if "fii_ord_col" in prefs and prefs["fii_ord_col"] in colunas_disp:
                 padroes["fii_ord_col"] = prefs["fii_ord_col"]
             if "fii_ord_asc" in prefs: padroes["fii_ord_asc"] = prefs["fii_ord_asc"]
-        except Exception:
-            pass
+    except Exception:
+        pass
+    finally:
+        db.close()
 
     for k, v in padroes.items():
         if k not in st.session_state:

@@ -23,6 +23,8 @@ from src.data_loader import (
     carregar_dados_empresa, listar_empresas, listar_acoes, carregar_multiplos_setor,
     obter_parametros_padrao, adicionar_empresa, salvar_dados_manuais, salvar_premissas
 )
+from src.database import SessionLocal
+from src.db_models import AppConfig
 from src.models import calcular_todos
 from src.analysis import gerar_relatorio_completo
 from src.carteira_page import page_carteira
@@ -216,9 +218,8 @@ def init_session():
 # ── Helper: Build Params ───────────────────────────────────────────────────────
 def build_params(ticker: str, setor: str, dados: dict, overrides: dict = None) -> dict:
     """Monta dicionário de parâmetros para os modelos de valuation."""
-    from src.data_loader import carregar_base_json
-    base = carregar_base_json()
-    emp_cfg = base.get(ticker.upper(), {})
+    from src.data_loader import obter_empresa
+    emp_cfg = obter_empresa(ticker)
     wacc_empresa = emp_cfg.get('wacc')
 
     if overrides and 'wacc' in overrides:
@@ -226,14 +227,18 @@ def build_params(ticker: str, setor: str, dados: dict, overrides: dict = None) -
     elif wacc_empresa is not None:
         wacc = float(wacc_empresa)
     else:
+        from src.data_loader import normalize_config_key
+        setor_key = normalize_config_key(setor)
         selic = st.session_state.get('selic', config.SELIC_ANUAL)
         premio_custom = st.session_state.get('premio_risco_custom', {})
-        premio = premio_custom.get(setor, config.PREMIO_RISCO_SETOR.get(setor, 0.05))
+        premio = premio_custom.get(setor, config.PREMIO_RISCO_SETOR.get(setor_key, 0.05))
         wacc = selic + premio
 
+    from src.data_loader import normalize_config_key
+    setor_key = normalize_config_key(setor)
     multiplos = carregar_multiplos_setor()
     multiplos_custom = st.session_state.get('multiplos_setor_custom', {})
-    multiplo_ev = multiplos_custom.get(setor) or multiplos.get(setor, {}).get('ev_ebitda')
+    multiplo_ev = multiplos_custom.get(setor) or multiplos.get(setor_key, {}).get('ev_ebitda')
 
     params = {
         'wacc': round(wacc, 4),
@@ -448,15 +453,17 @@ def _carregar_todas_empresas(t_exc=0.33, t_boa=0.15, t_justo=0.00, t_cara=-0.20)
             setor = cfg.get('setor', '')
             preco = float(dados.get('preco_atual') or 0)
 
+            from src.data_loader import normalize_config_key
+            setor_key = normalize_config_key(setor)
             multiplos = carregar_multiplos_setor()
-            multiplo_ev = multiplos.get(setor, {}).get('ev_ebitda')
+            multiplo_ev = multiplos.get(setor_key, {}).get('ev_ebitda')
             params = build_params(ticker, setor, dados, {'multiplo_ev_ebitda': multiplo_ev})
             calc = calcular_todos(dados, params)
 
             # Define o método principal
             metodo_str = cfg.get('metodo_principal')
             if not metodo_str:
-                metodo_str = METODO_INFO.get(config.METODOS_POR_SETOR.get(setor, ['bazin'])[0])[0]
+                metodo_str = METODO_INFO.get(config.METODOS_POR_SETOR.get(setor_key, ['bazin'])[0])[0]
 
             # Acha a key correspondente
             key_metodo = next((k for k, v in METODO_INFO.items() if v[0] == metodo_str), 'bazin')
@@ -577,20 +584,19 @@ def page_dashboard():
     todas_colunas = list(rename.values())
     todos_tickers = [r['ticker'] for r in rows]
     
-    # Carregar Layout salvo (Streamlit limpa as keys de widgets ao mudar de aba, então precisamos ler caso não exista)
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    layout_path = os.path.join(base_dir, 'data', 'dashboard_layout.json')
-    
+    # Carregar Layout salvo
     if "filtro_acoes" not in st.session_state or "filtro_colunas" not in st.session_state:
-        if os.path.exists(layout_path):
-            with open(layout_path, 'r', encoding='utf-8') as f:
-                layout_data = json.load(f)
-            # Garantir que os tickers carregados existam na base atual para não quebrar o componente
+        db = SessionLocal()
+        try:
+            cfg_layout = db.query(AppConfig).filter_by(chave='dashboard_layout').first()
+            layout_data = cfg_layout.valor if cfg_layout and cfg_layout.valor else {}
             st.session_state["filtro_acoes"] = [t for t in layout_data.get("filtro_acoes", todos_tickers) if t in todos_tickers]
             st.session_state["filtro_colunas"] = [c for c in layout_data.get("filtro_colunas", todas_colunas) if c in todas_colunas]
-        else:
+        except Exception:
             st.session_state["filtro_acoes"] = todos_tickers
             st.session_state["filtro_colunas"] = todas_colunas
+        finally:
+            db.close()
 
     f1, f2, f3, f4 = st.columns([3, 1, 3, 1])
     with f1:
@@ -624,12 +630,23 @@ def page_dashboard():
             "filtro_acoes": st.session_state["filtro_acoes"],
             "filtro_colunas": st.session_state["filtro_colunas"]
         }
-        with open(layout_path, 'w', encoding='utf-8') as f:
-            json.dump(layout_dict, f, indent=4, ensure_ascii=False)
-        st.success("Layout salvo com sucesso! Estas configurações serão mantidas nos próximos acessos.")
-        import time
-        time.sleep(1.5)
-        st.rerun()
+        db = SessionLocal()
+        try:
+            cfg_layout = db.query(AppConfig).filter_by(chave='dashboard_layout').first()
+            if cfg_layout:
+                cfg_layout.valor = layout_dict
+            else:
+                db.add(AppConfig(chave='dashboard_layout', valor=layout_dict))
+            db.commit()
+            st.success("Layout salvo com sucesso! Estas configurações serão mantidas nos próximos acessos.")
+            import time
+            time.sleep(1.5)
+            st.rerun()
+        except Exception as e:
+            db.rollback()
+            st.error(f"Erro ao salvar layout: {e}")
+        finally:
+            db.close()
             
     if not tickers_selecionados:
         st.info("Selecione ao menos uma ação para visualizar.")
@@ -730,7 +747,9 @@ def page_valuation():
 
     # Descrição da empresa
     descricao = emp_cfg.get('descricao', '')
-    metodos_rec = config.METODOS_POR_SETOR.get(setor, list(METODO_INFO.keys()))
+    from src.data_loader import normalize_config_key
+    setor_key = normalize_config_key(setor)
+    metodos_rec = config.METODOS_POR_SETOR.get(setor_key, list(METODO_INFO.keys()))
     ri_url = emp_cfg.get('referencia_ri', '')
 
     if descricao:
@@ -754,7 +773,9 @@ def page_valuation():
 
         
         selic = st.session_state.get('selic', config.SELIC_ANUAL)
-        premio = config.PREMIO_RISCO_SETOR.get(setor, 0.05)
+        from src.data_loader import normalize_config_key
+        setor_key = normalize_config_key(setor)
+        premio = config.PREMIO_RISCO_SETOR.get(setor_key, 0.05)
         wacc_default = selic + premio
         wacc_cfg = emp_cfg.get('wacc')
         wacc_inicial = custom_p.get('wacc', wacc_cfg if wacc_cfg is not None else wacc_default)

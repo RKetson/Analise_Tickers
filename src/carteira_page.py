@@ -2,9 +2,8 @@ import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
 import src.portfolio as pt
-from src.data_loader import carregar_dados_empresa, carregar_base_json, DATA_DIR
+from src.data_loader import carregar_dados_empresa, obter_setores, DATA_DIR, salvar_setor
 from src.formatters import formatar_moeda
-import json
 import os
 
 def render_carteira_tab(tipo: str):
@@ -18,13 +17,11 @@ def render_carteira_tab(tipo: str):
     
     st.markdown(f"### Gerenciamento de {tipo.capitalize()}")
 
-
     # --- Preços e Setores ---
     # Carregar preços atuais para todas as posições e simulações
     tickers = set(posicoes.keys()).union(set(simulacoes.keys()))
     precos = {}
-    setores = {}
-    base_json = carregar_base_json()
+    setores = obter_setores(list(tickers))
     
     if tickers:
         with st.spinner("Atualizando cotações..."):
@@ -35,11 +32,6 @@ def render_carteira_tab(tipo: str):
                     precos[tk] = float(p_atual)
                 else:
                     precos[tk] = 0.0
-                
-                setor = res.get('empresa_config', {}).get('setor', 'Outros')
-                if not setor or str(setor).strip() == '':
-                    setor = 'Outros'
-                setores[tk] = str(setor).replace('_', ' ').title()
     
     # Permitir cadastro de setor caso seja Outros (muito comum em FIIs)
     tickers_outros = [tk for tk, sec in setores.items() if sec == 'Outros']
@@ -49,12 +41,8 @@ def render_carteira_tab(tipo: str):
             for tk in tickers_outros:
                 novo_setor = st.text_input(f"Setor para {tk}", key=f"setor_{tipo}_{tk}")
                 if st.button(f"Salvar Setor {tk}", key=f"btn_setor_{tipo}_{tk}"):
-                    # Atualiza no companies.json
-                    emp = base_json.get(tk, {})
-                    emp['setor'] = novo_setor
-                    base_json[tk] = emp
-                    with open(os.path.join(DATA_DIR, 'companies.json'), 'w', encoding='utf-8') as f:
-                        json.dump(base_json, f, ensure_ascii=False, indent=2)
+                    # Atualiza no banco
+                    salvar_setor(tk, novo_setor)
                     st.rerun()
 
     # --- Adicionar Posições / Simulações ---
@@ -350,11 +338,15 @@ def render_carteira_tab(tipo: str):
                     st.rerun()
 
 def render_edicao_posicoes():
-    st.markdown("### ✏️ Edição Rápida de Posições")
+    st.markdown("### Editar Posições Manuais")
     st.markdown("Edite as quantidades diretamente na tabela. Para remover, digite 0. Para adicionar novos ativos, você pode adicionar uma nova linha no final da tabela (quando aplicável). Você também pode editar o Setor diretamente por aqui.")
     
     port = pt.load_portfolio()
-    base_json = carregar_base_json()
+    
+    todos_ativos = []
+    for t in ['acoes', 'fiis']:
+        todos_ativos.extend(port.get(t, {}).get('posicoes', {}).keys())
+    setores_map = obter_setores(todos_ativos)
     
     c1, c2 = st.columns(2)
     
@@ -366,7 +358,7 @@ def render_edicao_posicoes():
             
             rows = []
             for tk, val in posicoes.items():
-                s = base_json.get(tk, {}).get('setor', 'Outros')
+                s = setores_map.get(tk, 'Outros')
                 rows.append({'Ticker': tk, 'Quantidade': val['quantidade'], 'Setor': s})
                 
             df = pd.DataFrame(rows)
@@ -388,7 +380,6 @@ def render_edicao_posicoes():
             # Verificar se houve mudança e salvar
             if st.button(f"Salvar {tipo.capitalize()}", key=f"save_pos_{tipo}", use_container_width=True):
                 novas_posicoes = {}
-                mudou_setor = False
                 for _, row in edited_df.iterrows():
                     tk = str(row['Ticker']).strip().upper()
                     try:
@@ -399,18 +390,11 @@ def render_edicao_posicoes():
                     
                     if tk and quant > 0:
                         novas_posicoes[tk] = {'quantidade': quant}
-                        if tk not in base_json:
-                            base_json[tk] = {}
-                        if setor and base_json[tk].get('setor') != setor:
-                            base_json[tk]['setor'] = setor
-                            mudou_setor = True
+                        if setor and setores_map.get(tk) != setor:
+                            salvar_setor(tk, setor)
                         
                 port[tipo]['posicoes'] = novas_posicoes
                 pt.save_portfolio(port)
-                
-                if mudou_setor:
-                    with open(os.path.join(DATA_DIR, 'companies.json'), 'w', encoding='utf-8') as f:
-                        json.dump(base_json, f, ensure_ascii=False, indent=2)
                         
                 st.success(f"{tipo.capitalize()} atualizados!")
                 st.rerun()
