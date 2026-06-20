@@ -1,0 +1,3 @@
+[submodule "API_pluggy"]
+	path = API_pluggy
+	url = https://github.com/RKetson/API_pluggy.git
